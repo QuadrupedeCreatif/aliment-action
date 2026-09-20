@@ -406,7 +406,9 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
         background: "#1E2A22",
         color: "#F1EDE2",
         minHeight: "100%",
-        padding: "20px 16px 48px",
+        padding:
+          "calc(20px + env(safe-area-inset-top, 0px)) 16px calc(48px + env(safe-area-inset-bottom, 0px)) 16px",
+        boxSizing: "border-box",
       }}
     >
       <style>{`
@@ -463,7 +465,7 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
             borderRadius: 8,
             padding: "10px 12px",
             color: "#F1EDE2",
-            fontSize: 14,
+            fontSize: 16,
             outline: "none",
             boxSizing: "border-box",
           }}
@@ -521,7 +523,7 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
                 borderRadius: 8,
                 padding: "10px 12px",
                 color: "#F1EDE2",
-                fontSize: 14,
+                fontSize: 16,
                 outline: "none",
                 boxSizing: "border-box",
               }}
@@ -541,7 +543,7 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
                 borderRadius: 8,
                 padding: "10px 12px",
                 color: "#F1EDE2",
-                fontSize: 14,
+                fontSize: 16,
                 outline: "none",
                 boxSizing: "border-box",
               }}
@@ -566,7 +568,7 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
             borderRadius: 8,
             padding: "10px 12px",
             color: "#F1EDE2",
-            fontSize: 14,
+            fontSize: 16,
             outline: "none",
             boxSizing: "border-box",
           }}
@@ -623,7 +625,7 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
                   style={{
                     flexShrink: 0,
                     fontSize: 11.5,
-                    padding: "5px 10px",
+                    padding: "11px 14px",
                     borderRadius: 20,
                     border: viewIndex === null ? "1px solid #D9A441" : "1px solid #2E3F33",
                     background: viewIndex === null ? "#3C4E40" : "#26362C",
@@ -641,7 +643,7 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
                   style={{
                     flexShrink: 0,
                     fontSize: 11.5,
-                    padding: "5px 10px",
+                    padding: "11px 14px",
                     borderRadius: 20,
                     border: viewIndex === i ? "1px solid #D9A441" : "1px solid #2E3F33",
                     background: viewIndex === i ? "#3C4E40" : "#26362C",
@@ -720,7 +722,17 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
                               <button
                                 onClick={() => toggleFixe(field)}
                                 title={estFige ? "Libérer ce repas" : "Garder ce repas toute la semaine"}
-                                style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: estFige ? "#D9A441" : "#5A6E5E" }}
+                                style={{
+                                  background: "none",
+                                  border: "none",
+                                  padding: 12,
+                                  margin: -12,
+                                  cursor: "pointer",
+                                  color: estFige ? "#D9A441" : "#5A6E5E",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                }}
                               >
                                 {estFige ? <Pin size={11} /> : <PinOff size={11} />}
                               </button>
@@ -740,7 +752,7 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
                                 borderRadius: 4,
                                 padding: "3px 5px",
                                 color: "#F1EDE2",
-                                fontSize: 12.5,
+                                fontSize: 16,
                                 outline: "none",
                                 boxSizing: "border-box",
                               }}
@@ -785,7 +797,7 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
                       background: "transparent",
                       border: "1px solid #3C4E40",
                       borderRadius: 7,
-                      padding: "4px 8px",
+                      padding: "10px 14px",
                       color: copied ? "#D9A441" : "#9CAB9C",
                       fontSize: 11.5,
                       cursor: "pointer",
@@ -825,7 +837,7 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
                             borderRadius: 4,
                             padding: "6px 8px",
                             color: "#F1EDE2",
-                            fontSize: 14,
+                            fontSize: 16,
                             outline: "none",
                             boxSizing: "border-box",
                             marginBottom: 2,
@@ -842,7 +854,8 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
                           display: "flex",
                           alignItems: "center",
                           gap: 10,
-                          padding: "8px 2px",
+                          padding: "11px 4px",
+                          minHeight: 36,
                           cursor: "pointer",
                           opacity: isChecked ? 0.45 : 1,
                         }}
@@ -877,7 +890,18 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
                               e.stopPropagation();
                               startEditArticle(catIdx, itemIdx, art);
                             }}
-                            style={{ background: "none", border: "none", padding: 4, cursor: "pointer", color: "#5A6E5E", flexShrink: 0 }}
+                            style={{
+                              background: "none",
+                              border: "none",
+                              padding: 12,
+                              margin: "-12px 0",
+                              cursor: "pointer",
+                              color: "#5A6E5E",
+                              flexShrink: 0,
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                            }}
                           >
                             <Pencil size={12} />
                           </button>
