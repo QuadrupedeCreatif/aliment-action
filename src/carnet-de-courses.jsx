@@ -1,5 +1,27 @@
-import React, { useState, useEffect, useCallback } from "react";
-import { MapPin, RefreshCw, Check, Loader2, ChevronRight, ShoppingBasket, Pin, PinOff, Pencil, Copy, ClipboardCheck } from "lucide-react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import {
+  MapPin,
+  RefreshCw,
+  Check,
+  Loader2,
+  ChevronRight,
+  ShoppingBasket,
+  Pin,
+  PinOff,
+  Pencil,
+  Copy,
+  ClipboardCheck,
+  Plus,
+  X,
+} from "lucide-react";
+import {
+  MEALS_CONFIGS,
+  DEFAULT_REPAS_PAR_JOUR,
+  ACTIVITY_FACTORS,
+  ACTIVITY_LABELS,
+  calculerCibleFoyer,
+  formatFoodTableForPrompt,
+} from "./nutrition-data.js";
 
 // Colle ici l'URL publique de ton Worker Cloudflare une fois déployé
 // (résultat de `npx wrangler deploy` dans le dossier /worker), ex :
@@ -12,6 +34,23 @@ const GOALS = [
   { id: "equilibre", label: "Équilibré", desc: "Variété, portions standards" },
   { id: "recup", label: "Récupération intense", desc: "Grosse semaine de répétitions ou de spectacles" },
 ];
+
+const BUDGET_OPTIONS = [
+  { id: "serre", label: "Serré" },
+  { id: "normal", label: "Normal" },
+  { id: "large", label: "Large" },
+];
+
+const BUDGET_PROMPT_HINTS = {
+  serre: "Budget serré : privilégie légumineuses, œufs, féculents et légumes/fruits de saison ; limite la viande rouge et les ingrédients hors-saison ou coûteux.",
+  normal: "Budget normal : équilibre entre praticité et coût, sans contrainte particulière.",
+  large: "Budget large : aucune contrainte de coût, varie librement les protéines et ingrédients même premium si pertinent.",
+};
+
+const REPAS_OPTIONS = [3, 4, 5];
+
+const ACTIVITE_OPTIONS = Object.keys(ACTIVITY_FACTORS);
+const SEXE_OPTIONS = ["H", "F"];
 
 const MOIS_FR = [
   "janvier", "février", "mars", "avril", "mai", "juin",
@@ -62,6 +101,143 @@ function getISOWeek(date) {
   return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
 }
 
+function makeDefaultPersonne(id, nom) {
+  return { id, nom, taille: "", poids: "", age: "", sexe: "", activite: "modere", objectifCalorique: "" };
+}
+
+const baseInputStyle = {
+  width: "100%",
+  background: "#26362C",
+  border: "1px solid #3C4E40",
+  borderRadius: 8,
+  padding: "10px 12px",
+  color: "#F1EDE2",
+  fontSize: 16,
+  outline: "none",
+  boxSizing: "border-box",
+};
+
+function PersonneCard({ personne, index, onChange, onRemove, canRemove }) {
+  return (
+    <div
+      style={{
+        background: "#26362C",
+        border: "1px solid #2E3F33",
+        borderRadius: 10,
+        padding: 14,
+        marginBottom: 10,
+      }}
+    >
+      <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
+        <input
+          value={personne.nom}
+          onChange={(e) => onChange(personne.id, "nom", e.target.value)}
+          placeholder={`Personne ${index + 1}`}
+          style={{ ...baseInputStyle, fontWeight: 600 }}
+        />
+        {canRemove && (
+          <button
+            onClick={() => onRemove(personne.id)}
+            title="Retirer cette personne"
+            style={{
+              background: "none",
+              border: "1px solid #3C4E40",
+              borderRadius: 8,
+              padding: 10,
+              cursor: "pointer",
+              color: "#C77B5F",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+            }}
+          >
+            <X size={16} />
+          </button>
+        )}
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <input
+          type="number"
+          inputMode="numeric"
+          value={personne.taille}
+          onChange={(e) => onChange(personne.id, "taille", e.target.value)}
+          placeholder="Taille (cm)"
+          style={baseInputStyle}
+        />
+        <input
+          type="number"
+          inputMode="numeric"
+          value={personne.poids}
+          onChange={(e) => onChange(personne.id, "poids", e.target.value)}
+          placeholder="Poids (kg)"
+          style={baseInputStyle}
+        />
+        <input
+          type="number"
+          inputMode="numeric"
+          value={personne.age}
+          onChange={(e) => onChange(personne.id, "age", e.target.value)}
+          placeholder="Âge"
+          style={baseInputStyle}
+        />
+      </div>
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+        {SEXE_OPTIONS.map((s) => (
+          <button
+            key={s}
+            onClick={() => onChange(personne.id, "sexe", s)}
+            style={{
+              flex: 1,
+              padding: "10px 8px",
+              borderRadius: 8,
+              border: personne.sexe === s ? "1px solid #D9A441" : "1px solid #2E3F33",
+              background: personne.sexe === s ? "#3C4E40" : "#1E2A22",
+              color: "#F1EDE2",
+              fontSize: 13,
+              cursor: "pointer",
+            }}
+          >
+            {s === "H" ? "Homme" : "Femme"}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+        {ACTIVITE_OPTIONS.map((a) => (
+          <button
+            key={a}
+            onClick={() => onChange(personne.id, "activite", a)}
+            style={{
+              flex: 1,
+              padding: "10px 6px",
+              borderRadius: 8,
+              border: personne.activite === a ? "1px solid #D9A441" : "1px solid #2E3F33",
+              background: personne.activite === a ? "#3C4E40" : "#1E2A22",
+              color: "#F1EDE2",
+              fontSize: 12.5,
+              cursor: "pointer",
+            }}
+          >
+            {ACTIVITY_LABELS[a]}
+          </button>
+        ))}
+      </div>
+
+      <input
+        type="number"
+        inputMode="numeric"
+        value={personne.objectifCalorique}
+        onChange={(e) => onChange(personne.id, "objectifCalorique", e.target.value)}
+        placeholder="Objectif calorique précis en kcal (optionnel, sinon calcul auto)"
+        style={baseInputStyle}
+      />
+    </div>
+  );
+}
+
 export default function CarnetDeCourses() {
   const now = new Date();
   const moisLabel = MOIS_FR[now.getMonth()];
@@ -69,10 +245,12 @@ export default function CarnetDeCourses() {
   const saisonMois = SAISON_FR[now.getMonth()];
 
   const [goalId, setGoalId] = useState(null);
-  const [taille, setTaille] = useState("");
-  const [poids, setPoids] = useState("");
   const [pays, setPays] = useState("France");
   const [exclusions, setExclusions] = useState("");
+  const [personnes, setPersonnes] = useState([makeDefaultPersonne(1, "Toi")]);
+  const [repasParJour, setRepasParJour] = useState(DEFAULT_REPAS_PAR_JOUR);
+  const [budget, setBudget] = useState("normal");
+  const [cuisine, setCuisine] = useState("");
   const [loading, setLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState("");
   const [error, setError] = useState(null);
@@ -82,20 +260,20 @@ export default function CarnetDeCourses() {
   const [contexteUtilise, setContexteUtilise] = useState(null);
   const [historique, setHistorique] = useState([]);
   const [viewIndex, setViewIndex] = useState(null); // null = semaine actuelle, sinon index dans historique
-  const [repasFixes, setRepasFixes] = useState({ petit_dej: null, collation: null, dejeuner: null, diner: null });
+  const [repasFixes, setRepasFixes] = useState({});
   const [editingKey, setEditingKey] = useState(null);
   const [editingValue, setEditingValue] = useState("");
   const [copied, setCopied] = useState(false);
 
-  // Load last saved list on mount
+  const nextPersonneId = useRef(2);
+
+  // Load last saved state on mount
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const saved = JSON.parse(raw);
         setGoalId(saved.goalId || null);
-        setTaille(saved.taille || "");
-        setPoids(saved.poids || "");
         setPays(saved.pays || "France");
         setExclusions(saved.exclusions || "");
         setData(saved.data || null);
@@ -103,7 +281,19 @@ export default function CarnetDeCourses() {
         setGeneratedAt(saved.generatedAt || null);
         setContexteUtilise(saved.contexteUtilise || null);
         setHistorique(saved.historique || []);
-        setRepasFixes(saved.repasFixes || { petit_dej: null, collation: null, dejeuner: null, diner: null });
+        setRepasFixes(saved.repasFixes || {});
+        setRepasParJour(saved.repasParJour || DEFAULT_REPAS_PAR_JOUR);
+        setBudget(saved.budget || "normal");
+        setCuisine(saved.cuisine || "");
+
+        if (Array.isArray(saved.personnes) && saved.personnes.length > 0) {
+          setPersonnes(saved.personnes);
+          const maxId = Math.max(...saved.personnes.map((p) => (typeof p.id === "number" ? p.id : 0)));
+          nextPersonneId.current = maxId + 1;
+        } else if (saved.taille || saved.poids) {
+          // Migration depuis l'ancien état à une seule personne (taille/poids au sommet)
+          setPersonnes([{ ...makeDefaultPersonne(1, "Toi"), taille: saved.taille || "", poids: saved.poids || "" }]);
+        }
       }
     } catch (e) {
       // rien de sauvegardé, écran vierge
@@ -117,6 +307,24 @@ export default function CarnetDeCourses() {
       // sauvegarde best-effort
     }
   }, []);
+
+  const cibleFoyer = useMemo(() => calculerCibleFoyer(personnes, goalId), [personnes, goalId]);
+
+  const mealsAtual = MEALS_CONFIGS[repasParJour] || MEALS_CONFIGS[DEFAULT_REPAS_PAR_JOUR];
+
+  const addPersonne = () => {
+    const id = nextPersonneId.current++;
+    setPersonnes([...personnes, makeDefaultPersonne(id, `Personne ${personnes.length + 1}`)]);
+  };
+
+  const removePersonne = (id) => {
+    if (personnes.length <= 1) return;
+    setPersonnes(personnes.filter((p) => p.id !== id));
+  };
+
+  const updatePersonneField = (id, field, value) => {
+    setPersonnes(personnes.map((p) => (p.id === id ? { ...p, [field]: value } : p)));
+  };
 
   const callClaude = async (prompt) => {
     const response = await fetch(WORKER_URL, {
@@ -151,32 +359,41 @@ export default function CarnetDeCourses() {
     const paysLabel = pays.trim() || "France";
     const localisationLabel = paysLabel;
     const exclusionsTrim = exclusions.trim();
+    const cuisineTrim = cuisine.trim();
+    const meals = mealsAtual;
 
     const semainePrecedente = data
-      ? data.semaine.map((j) => `${j.petit_dej}; ${j.collation}; ${j.dejeuner}; ${j.diner}`).join(" | ")
+      ? data.semaine.map((j) => meals.map((m) => j[m.key]).join("; ")).join(" | ")
       : null;
 
-    const contexte = `- Mois actuel : ${moisLabel}\n- Pays : ${paysLabel}\n- Objectif : ${goal.label} — ${goal.desc}\n- Légumes de saison ce mois-ci : ${saisonMois.legumes.join(", ")}\n- Fruits de saison ce mois-ci : ${saisonMois.fruits.join(", ")} (cette liste part d'un climat tempéré ; adapte-la si le pays a un climat très différent)${
-      taille || poids
-        ? `\n- Corpulence : ${taille ? `${taille}cm` : "taille non précisée"}, ${poids ? `${poids}kg` : "poids non précisé"} (ajuste les quantités et apports en conséquence)`
-        : ""
+    const foyerTexte =
+      cibleFoyer.parPersonne.length > 0
+        ? `- Foyer : ${cibleFoyer.nbPersonnes} personne(s). Cibles quotidiennes calculées (Mifflin-St Jeor) — ${cibleFoyer.parPersonne
+            .map((p) => `${p.nom || "personne"} : ≈${p.kcal}kcal/${p.prot}g prot`)
+            .join(", ")}. Total foyer : ≈${cibleFoyer.kcal}kcal et ${cibleFoyer.prot}g protéines par jour.`
+        : `- Foyer : ${cibleFoyer.nbPersonnes} personne(s), profils incomplets (taille/poids/âge non renseignés) — adapte des portions standards.`;
+
+    const contexte = `- Mois actuel : ${moisLabel}\n- Pays : ${paysLabel}\n- Objectif : ${goal.label} — ${goal.desc}\n- Légumes de saison ce mois-ci : ${saisonMois.legumes.join(", ")}\n- Fruits de saison ce mois-ci : ${saisonMois.fruits.join(", ")} (cette liste part d'un climat tempéré ; adapte-la si le pays a un climat très différent)\n${foyerTexte}\n- ${BUDGET_PROMPT_HINTS[budget]}${
+      cuisineTrim ? `\n- Type de cuisine souhaité : ${cuisineTrim}` : ""
     }${exclusionsTrim ? `\n- À éviter absolument (allergies/préférences) : ${exclusionsTrim}` : ""}${
       semainePrecedente ? `\n- Repas de la semaine précédente, à varier (évite de répéter les mêmes associations) : ${semainePrecedente}` : ""
-    }`;
+    }\n- Table de référence nutritionnelle (kcal/protéines pour 100g, aliments courants — appuie-toi dessus pour tes choix) : ${formatFoodTableForPrompt()}`;
 
     try {
       // Étape 1 — menus, scindée en 2 appels (début/fin de semaine) pour rester dans le budget de réponse
       const JOURS = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"];
       const menusPromptPour = (joursSubset) => {
+        const champsExemple = meals.map((m) => `"${m.key}": "..."`).join(", ");
         const exemple = joursSubset
-          .map((j) => `  {"jour": "${j}", "petit_dej": "...", "collation": "...", "dejeuner": "...", "diner": "...", "kcal": 2200, "prot": 140}`)
+          .map((j) => `  {"jour": "${j}", ${champsExemple}, "kcal": 2200, "prot": 140}`)
           .join(",\n");
-        return `Tu es un nutritionniste pragmatique qui aide quelqu'un à composer ses repas de la semaine.
+        const listeRepasTexte = meals.map((m) => m.label.toLowerCase()).join(", ");
+        return `Tu es un nutritionniste pragmatique qui aide un foyer à composer ses repas de la semaine.
 
 Contexte :
 ${contexte}
 
-Consigne stricte : ne donne AUCUNE recette, juste pour chaque repas (dont la collation) une courte association d'aliments AVEC quantités précises pour une personne, en priorisant les légumes/fruits de saison listés ci-dessus et en respectant les aliments à éviter le cas échéant. TOUTES les quantités sont en poids CRU, tel qu'acheté et pesé avant cuisson — n'écris JAMAIS le mot "cuit(es)" ni un poids cuit. C'est particulièrement important pour le riz et les pâtes, qui doublent de poids à la cuisson : utilise leur poids sec (ex: "80g riz cru", "90g pâtes crues"), jamais "180g riz cuit" ou "200g pâtes cuites". Format quantité : grammes pour le solide (ex: "100g flocons d'avoine"), cl pour le liquide (ex: "20cl lait entier"), pièces pour les fruits/légumes entiers (ex: "2 bananes"), cuillères pour les condiments. Exemple complet : "100g flocons d'avoine + 20cl lait entier + 2 bananes". Reste concis, 3 aliments max par repas. Ajoute aussi pour chaque jour une estimation approximative du total kcal ("kcal", nombre entier) et des protéines en grammes ("prot", nombre entier) sur l'ensemble de la journée. Génère UNIQUEMENT les jours suivants : ${joursSubset.join(", ")}.
+Consigne stricte : ne donne AUCUNE recette, juste pour chaque repas (${listeRepasTexte}) une courte association d'aliments AVEC quantités précises AU NIVEAU DU FOYER (une seule quantité lisible par aliment pour tout le foyer, pas de détail par personne dans le texte), en priorisant les légumes/fruits de saison listés ci-dessus, la table de référence nutritionnelle, et en respectant les aliments à éviter le cas échéant. TOUTES les quantités sont en poids CRU, tel qu'acheté et pesé avant cuisson — n'écris JAMAIS le mot "cuit(es)" ni un poids cuit. C'est particulièrement important pour le riz et les pâtes, qui doublent de poids à la cuisson : utilise leur poids sec (ex: "80g riz cru", "90g pâtes crues"), jamais "180g riz cuit" ou "200g pâtes cuites". Format quantité : grammes pour le solide (ex: "100g flocons d'avoine"), cl pour le liquide (ex: "20cl lait entier"), pièces pour les fruits/légumes entiers (ex: "2 bananes"), cuillères pour les condiments. Exemple complet : "100g flocons d'avoine + 20cl lait entier + 2 bananes". Reste concis, 3 aliments max par repas. Ajoute aussi pour chaque jour une estimation approximative du total kcal ("kcal", nombre entier) et des protéines en grammes ("prot", nombre entier) sur l'ensemble de la journée, pour le foyer entier. Génère UNIQUEMENT les jours suivants : ${joursSubset.join(", ")}.
 
 Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase avant ou après :
 {"semaine": [
@@ -204,30 +421,33 @@ ${exemple}
       }
 
       const menusData = {
-        semaine: [...menusData1.semaine, ...menusData2.semaine].map((j) => ({
-          jour: j.jour,
-          petit_dej: repasFixes.petit_dej || crudifie(j.petit_dej),
-          collation: repasFixes.collation || crudifie(j.collation),
-          dejeuner: repasFixes.dejeuner || crudifie(j.dejeuner),
-          diner: repasFixes.diner || crudifie(j.diner),
-          kcal: j.kcal,
-          prot: j.prot,
-        })),
+        semaine: [...menusData1.semaine, ...menusData2.semaine].map((j) => {
+          const jour = { jour: j.jour, kcal: j.kcal, prot: j.prot };
+          for (const m of meals) {
+            jour[m.key] = repasFixes[m.key] || crudifie(j[m.key]);
+          }
+          return jour;
+        }),
       };
 
       // Étape 2 — liste de courses dérivée des menus ci-dessus
       setLoadingStep("Construction de la liste de courses...");
       const resumeMenus = menusData.semaine
-        .map((j) => `${j.jour}: ${j.petit_dej} / collation: ${j.collation} / ${j.dejeuner} / ${j.diner}`)
+        .map((j) => `${j.jour}: ${meals.map((m) => `${m.label.toLowerCase()}: ${j[m.key]}`).join(" / ")}`)
         .join("\n");
-      const corpulence =
-        taille || poids
-          ? `Corpulence de la personne : ${taille ? `${taille}cm` : "taille non précisée"}, ${poids ? `${poids}kg` : "poids non précisé"} — ajuste les quantités en conséquence (portions plus grosses pour un gabarit plus élevé et pour l'objectif "${goal.label}").\n`
-          : "";
-      const promptListe = `Voici les repas prévus cette semaine pour une personne (objectif : ${goal.label}) :
+
+      const foyerListeTexte =
+        cibleFoyer.parPersonne.length > 0
+          ? `Ce menu doit couvrir tout le foyer, soit ${cibleFoyer.nbPersonnes} personne(s) avec des besoins différents : ${cibleFoyer.parPersonne
+              .map((p) => `${p.nom || "personne"} (≈${p.kcal}kcal/j, ${p.prot}g prot/j)`)
+              .join(", ")}. Total foyer sur 7 jours : environ ${cibleFoyer.kcal * 7}kcal et ${cibleFoyer.prot * 7}g de protéines cumulés. Calcule les quantités totales de courses pour L'ENSEMBLE DU FOYER (pas une seule personne), en tenant compte du nombre de personnes et de leurs besoins caloriques respectifs.\n`
+          : `Ce menu doit couvrir ${cibleFoyer.nbPersonnes} personne(s) du foyer (profils incomplets, utilise des portions standards).\n`;
+
+      const promptListe = `Voici les repas prévus cette semaine pour le foyer (objectif : ${goal.label}) :
 ${resumeMenus}
 
-${corpulence}Construis la liste de courses correspondante pour 7 jours, une personne, en cumulant les quantités déjà indiquées ci-dessus pour chaque ingrédient (évite les doublons, additionne). TOUTES les quantités sont en poids CRU, tel qu'acheté avant cuisson — n'écris JAMAIS "cuit(es)". Pour le riz et les pâtes en particulier, utilise le poids sec/cru (ex: "80g riz cru"), jamais un poids cuit. Maximum 5 catégories, maximum 6 articles par catégorie. Chaque article est une seule chaîne courte "nom + quantité totale" (ex: "Poulet 600g", "Riz basmati 1kg", "Brocolis 2 têtes").
+${foyerListeTexte}${BUDGET_PROMPT_HINTS[budget]}
+Construis la liste de courses correspondante pour 7 jours, pour tout le foyer, en cumulant les quantités déjà indiquées ci-dessus pour chaque ingrédient (évite les doublons, additionne). TOUTES les quantités sont en poids CRU, tel qu'acheté avant cuisson — n'écris JAMAIS "cuit(es)". Pour le riz et les pâtes en particulier, utilise le poids sec/cru (ex: "80g riz cru"), jamais un poids cuit. Maximum 5 catégories, maximum 6 articles par catégorie. Chaque article est une seule chaîne courte "nom + quantité totale" (ex: "Poulet 600g", "Riz basmati 1kg", "Brocolis 2 têtes").
 
 Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase avant ou après :
 {"liste_courses": [
@@ -252,7 +472,13 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
         })),
       };
       const ts = new Date().toISOString();
-      const ctx = { mois: moisLabel, localisation: localisationLabel, objectif: goal.label };
+      const ctx = {
+        mois: moisLabel,
+        localisation: localisationLabel,
+        objectif: goal.label,
+        repasParJour,
+        cibleFoyer: { kcal: cibleFoyer.kcal, prot: cibleFoyer.prot, nbPersonnes: cibleFoyer.nbPersonnes },
+      };
 
       // Historique : on range l'ancienne semaine actuelle avant de la remplacer (max 4 conservées)
       const nouvelHistorique = data
@@ -267,10 +493,12 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
       setViewIndex(null);
       await persist({
         goalId,
-        taille,
-        poids,
         pays,
         exclusions,
+        personnes,
+        repasParJour,
+        budget,
+        cuisine,
         repasFixes,
         data: parsed,
         checked: {},
@@ -290,10 +518,12 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
     async (overrides = {}) => {
       await persist({
         goalId,
-        taille,
-        poids,
         pays,
         exclusions,
+        personnes,
+        repasParJour,
+        budget,
+        cuisine,
         repasFixes,
         data,
         checked,
@@ -303,7 +533,7 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
         ...overrides,
       });
     },
-    [persist, goalId, taille, poids, pays, exclusions, repasFixes, data, checked, generatedAt, contexteUtilise, historique]
+    [persist, goalId, pays, exclusions, personnes, repasParJour, budget, cuisine, repasFixes, data, checked, generatedAt, contexteUtilise, historique]
   );
 
   const toggleItem = async (key) => {
@@ -376,6 +606,20 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
           contexteUtilise: historique[viewIndex] ? historique[viewIndex].contexteUtilise : null,
           editable: false,
         };
+
+  // Les repas affichés dépendent du réglage utilisé au moment de la génération
+  // de cette entrée précise (utile pour l'historique, généré avec un autre réglage).
+  const mealsPourAffichage = MEALS_CONFIGS[activeEntry.contexteUtilise?.repasParJour] || mealsAtual;
+
+  const resumeNutritionnel = useMemo(() => {
+    if (!activeEntry.data) return null;
+    const jours = activeEntry.data.semaine.filter((j) => Number.isFinite(j.kcal) && Number.isFinite(j.prot));
+    if (jours.length === 0) return null;
+    const moyenneKcal = Math.round(jours.reduce((s, j) => s + j.kcal, 0) / jours.length);
+    const moyenneProt = Math.round(jours.reduce((s, j) => s + j.prot, 0) / jours.length);
+    const cible = activeEntry.contexteUtilise?.cibleFoyer || null;
+    return { moyenneKcal, moyenneProt, cible };
+  }, [activeEntry.data, activeEntry.contexteUtilise]);
 
   const copierListe = async () => {
     if (!activeEntry.data) return;
@@ -458,17 +702,7 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
           value={pays}
           onChange={(e) => setPays(e.target.value)}
           placeholder="France"
-          style={{
-            width: "100%",
-            background: "#26362C",
-            border: "1px solid #3C4E40",
-            borderRadius: 8,
-            padding: "10px 12px",
-            color: "#F1EDE2",
-            fontSize: 16,
-            outline: "none",
-            boxSizing: "border-box",
-          }}
+          style={baseInputStyle}
         />
       </div>
 
@@ -503,53 +737,113 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
         </div>
       </div>
 
-      {/* Corpulence */}
+      {/* Foyer / personnes */}
       <div style={{ marginBottom: 20 }}>
         <div style={{ fontSize: 13, color: "#9CAB9C", marginBottom: 8 }}>
-          Ton gabarit (optionnel, ajuste les quantités)
+          Qui mange cette semaine ? (besoins caloriques calculés automatiquement)
         </div>
-        <div style={{ display: "flex", gap: 10 }}>
-          <div style={{ flex: 1 }}>
-            <input
-              type="number"
-              inputMode="numeric"
-              value={taille}
-              onChange={(e) => setTaille(e.target.value)}
-              placeholder="Taille (cm)"
-              style={{
-                width: "100%",
-                background: "#26362C",
-                border: "1px solid #3C4E40",
-                borderRadius: 8,
-                padding: "10px 12px",
-                color: "#F1EDE2",
-                fontSize: 16,
-                outline: "none",
-                boxSizing: "border-box",
-              }}
-            />
+        {personnes.map((p, i) => (
+          <PersonneCard
+            key={p.id}
+            personne={p}
+            index={i}
+            onChange={updatePersonneField}
+            onRemove={removePersonne}
+            canRemove={personnes.length > 1}
+          />
+        ))}
+        <button
+          onClick={addPersonne}
+          style={{
+            width: "100%",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 6,
+            background: "transparent",
+            border: "1px dashed #3C4E40",
+            borderRadius: 10,
+            padding: "12px 14px",
+            color: "#9CAB9C",
+            fontSize: 13.5,
+            cursor: "pointer",
+          }}
+        >
+          <Plus size={15} /> Ajouter une personne
+        </button>
+
+        {cibleFoyer.parPersonne.length > 0 && (
+          <div style={{ fontSize: 12, color: "#9CAB9C", marginTop: 10 }}>
+            Cible foyer : <span style={{ color: "#D9A441" }}>≈{cibleFoyer.kcal} kcal</span> ·{" "}
+            <span style={{ color: "#D9A441" }}>{cibleFoyer.prot}g protéines</span> / jour
+            {cibleFoyer.incompletes > 0
+              ? ` (${cibleFoyer.incompletes} profil${cibleFoyer.incompletes > 1 ? "s" : ""} incomplet${cibleFoyer.incompletes > 1 ? "s" : ""} exclu${cibleFoyer.incompletes > 1 ? "s" : ""} du calcul)`
+              : ""}
           </div>
-          <div style={{ flex: 1 }}>
-            <input
-              type="number"
-              inputMode="numeric"
-              value={poids}
-              onChange={(e) => setPoids(e.target.value)}
-              placeholder="Poids (kg)"
+        )}
+      </div>
+
+      {/* Nombre de repas */}
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontSize: 13, color: "#9CAB9C", marginBottom: 8 }}>Nombre de repas par jour</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {REPAS_OPTIONS.map((n) => (
+            <button
+              key={n}
+              onClick={() => setRepasParJour(n)}
               style={{
-                width: "100%",
-                background: "#26362C",
-                border: "1px solid #3C4E40",
+                flex: 1,
+                padding: "11px 8px",
                 borderRadius: 8,
-                padding: "10px 12px",
+                border: repasParJour === n ? "1px solid #D9A441" : "1px solid #2E3F33",
+                background: repasParJour === n ? "#3C4E40" : "#26362C",
                 color: "#F1EDE2",
-                fontSize: 16,
-                outline: "none",
-                boxSizing: "border-box",
+                fontSize: 14,
+                cursor: "pointer",
               }}
-            />
-          </div>
+            >
+              {n} repas
+            </button>
+          ))}
         </div>
+      </div>
+
+      {/* Budget */}
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontSize: 13, color: "#9CAB9C", marginBottom: 8 }}>Budget courses</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {BUDGET_OPTIONS.map((b) => (
+            <button
+              key={b.id}
+              onClick={() => setBudget(b.id)}
+              style={{
+                flex: 1,
+                padding: "11px 8px",
+                borderRadius: 8,
+                border: budget === b.id ? "1px solid #D9A441" : "1px solid #2E3F33",
+                background: budget === b.id ? "#3C4E40" : "#26362C",
+                color: "#F1EDE2",
+                fontSize: 14,
+                cursor: "pointer",
+              }}
+            >
+              {b.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Type de cuisine */}
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontSize: 13, color: "#9CAB9C", marginBottom: 8 }}>
+          Type de cuisine (optionnel)
+        </div>
+        <input
+          value={cuisine}
+          onChange={(e) => setCuisine(e.target.value)}
+          placeholder="ex: méditerranéenne, asiatique, classique..."
+          style={baseInputStyle}
+        />
       </div>
 
       {/* Aliments à éviter */}
@@ -561,17 +855,7 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
           value={exclusions}
           onChange={(e) => setExclusions(e.target.value)}
           placeholder="ex: poisson, lactose, coriandre"
-          style={{
-            width: "100%",
-            background: "#26362C",
-            border: "1px solid #3C4E40",
-            borderRadius: 8,
-            padding: "10px 12px",
-            color: "#F1EDE2",
-            fontSize: 16,
-            outline: "none",
-            boxSizing: "border-box",
-          }}
+          style={baseInputStyle}
         />
       </div>
 
@@ -677,9 +961,20 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
 
           {activeEntry.data && (
             <>
-              <div className="carnet-title" style={{ fontSize: 17, fontWeight: 600, marginBottom: 10 }}>
+              <div className="carnet-title" style={{ fontSize: 17, fontWeight: 600, marginBottom: 6 }}>
                 Associations de la semaine
               </div>
+
+              {resumeNutritionnel && (
+                <div style={{ fontSize: 12, color: "#9CAB9C", marginBottom: 14 }}>
+                  Moyenne semaine : <span style={{ color: "#D9A441" }}>≈{resumeNutritionnel.moyenneKcal} kcal/jour</span> ·{" "}
+                  <span style={{ color: "#D9A441" }}>{resumeNutritionnel.moyenneProt}g protéines</span>
+                  {resumeNutritionnel.cible
+                    ? ` — cible foyer : ${resumeNutritionnel.cible.kcal} kcal · ${resumeNutritionnel.cible.prot}g`
+                    : ""}
+                </div>
+              )}
+
               <div style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 8, marginBottom: 24 }}>
                 {activeEntry.data.semaine.map((jour, jourIdx) => (
                   <div
@@ -695,17 +990,12 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
                     <div style={{ fontSize: 12, fontWeight: 600, color: "#D9A441", marginBottom: 8 }}>
                       {jour.jour}
                     </div>
-                    {[
-                      ["Matin", "petit_dej"],
-                      ["Collation", "collation"],
-                      ["Midi", "dejeuner"],
-                      ["Soir", "diner"],
-                    ].map(([label, field]) => {
+                    {mealsPourAffichage.map(({ key: field, label }) => {
                       const val = jour[field];
                       const editKey = `meal-${jourIdx}-${field}`;
                       const estFige = !!repasFixes[field];
                       return (
-                        <div key={label} style={{ marginBottom: 7 }}>
+                        <div key={field} style={{ marginBottom: 7 }}>
                           <div
                             style={{
                               display: "flex",
