@@ -1,0 +1,23 @@
+{
+  "name": "Carnet de courses",
+  "short_name": "Courses",
+  "start_url": "/aliment-action/",
+  "scope": "/aliment-action/",
+  "display": "standalone",
+  "background_color": "#1E2A22",
+  "theme_color": "#1E2A22",
+  "icons": [
+    {
+      "src": "/aliment-action/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/aliment-action/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
