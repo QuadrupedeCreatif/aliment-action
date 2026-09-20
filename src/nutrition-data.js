@@ -83,6 +83,20 @@ export function calculerCibleFoyer(personnes, objectifId) {
   return { kcal, prot, parPersonne, incompletes, nbPersonnes: personnes.length };
 }
 
+// Construit la ligne de contexte "- Foyer : ..." envoyée au prompt, à partir
+// du résultat de calculerCibleFoyer(). Boucle sur TOUT parPersonne (jamais un
+// seul profil) pour lister chaque personne puis un total qui est la somme
+// réelle de toutes les cibles (cibleFoyer.kcal/prot sont déjà la somme,
+// calculée dans calculerCibleFoyer — cette fonction ne fait qu'assembler le
+// texte, aucun recalcul ici).
+export function construireLigneFoyer(cibleFoyer) {
+  if (cibleFoyer.parPersonne.length === 0) {
+    return `- Foyer : ${cibleFoyer.nbPersonnes} personne(s), profils incomplets (taille/poids/âge non renseignés) — adapte des portions standards.`;
+  }
+  const detail = cibleFoyer.parPersonne.map((p) => `${p.nom || "personne"} : ≈${p.kcal}kcal/${p.prot}g prot`).join(", ");
+  return `- Foyer : ${cibleFoyer.nbPersonnes} personne(s). Cibles quotidiennes calculées (Mifflin-St Jeor) — ${detail}. Total foyer : ≈${cibleFoyer.kcal}kcal et ${cibleFoyer.prot}g protéines par jour.`;
+}
+
 // Configurations de repas disponibles (point 4). Une seule source de vérité
 // pour le prompt, l'exemple JSON, le rendu des cartes et le résumé texte.
 export const MEALS_CONFIGS = {

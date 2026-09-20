@@ -23,7 +23,9 @@ import {
   ACTIVITY_FACTORS,
   ACTIVITY_LABELS,
   calculerCibleFoyer,
+  construireLigneFoyer,
   formatFoodTableForPrompt,
+  personneEstComplete,
 } from "./nutrition-data.js";
 
 // Colle ici l'URL publique de ton Worker Cloudflare une fois déployé
@@ -128,6 +130,15 @@ const baseInputStyle = {
 };
 
 function PersonneCard({ personne, index, onChange, onRemove, canRemove }) {
+  const sexeManquant = personne.sexe !== "H" && personne.sexe !== "F";
+  const champsManquants = [
+    !(Number(personne.taille) > 0) && "taille",
+    !(Number(personne.poids) > 0) && "poids",
+    !(Number(personne.age) > 0) && "âge",
+    sexeManquant && "sexe",
+  ].filter(Boolean);
+  const complet = personneEstComplete(personne);
+
   return (
     <div
       style={{
@@ -203,7 +214,7 @@ function PersonneCard({ personne, index, onChange, onRemove, canRemove }) {
               flex: 1,
               padding: "10px 8px",
               borderRadius: 8,
-              border: personne.sexe === s ? "1px solid #D9A441" : "1px solid #2E3F33",
+              border: personne.sexe === s ? "1px solid #D9A441" : sexeManquant ? "1px solid #C77B5F" : "1px solid #2E3F33",
               background: personne.sexe === s ? "#3C4E40" : "#1E2A22",
               color: "#F1EDE2",
               fontSize: 13,
@@ -244,6 +255,13 @@ function PersonneCard({ personne, index, onChange, onRemove, canRemove }) {
         placeholder="Objectif calorique précis en kcal (optionnel, sinon calcul auto)"
         style={baseInputStyle}
       />
+
+      {!complet && (
+        <div style={{ fontSize: 11, color: "#C77B5F", marginTop: 8 }}>
+          Profil incomplet ({champsManquants.join(", ")} manquant{champsManquants.length > 1 ? "s" : ""}) — exclu du
+          calcul de la cible foyer tant que ce n'est pas renseigné.
+        </div>
+      )}
     </div>
   );
 }
@@ -381,12 +399,7 @@ export default function CarnetDeCourses() {
       ? data.semaine.map((j) => meals.map((m) => j[m.key]).join("; ")).join(" | ")
       : null;
 
-    const foyerTexte =
-      cibleFoyer.parPersonne.length > 0
-        ? `- Foyer : ${cibleFoyer.nbPersonnes} personne(s). Cibles quotidiennes calculées (Mifflin-St Jeor) — ${cibleFoyer.parPersonne
-            .map((p) => `${p.nom || "personne"} : ≈${p.kcal}kcal/${p.prot}g prot`)
-            .join(", ")}. Total foyer : ≈${cibleFoyer.kcal}kcal et ${cibleFoyer.prot}g protéines par jour.`
-        : `- Foyer : ${cibleFoyer.nbPersonnes} personne(s), profils incomplets (taille/poids/âge non renseignés) — adapte des portions standards.`;
+    const foyerTexte = construireLigneFoyer(cibleFoyer);
 
     const contexte = `- Mois actuel : ${moisLabel}\n- Pays : ${paysLabel}\n- Objectif : ${goal.label} — ${goal.desc}\n- Légumes de saison ce mois-ci : ${saisonMois.legumes.join(", ")}\n- Fruits de saison ce mois-ci : ${saisonMois.fruits.join(", ")} (cette liste part d'un climat tempéré ; adapte-la si le pays a un climat très différent)\n${foyerTexte}\n- ${BUDGET_PROMPT_HINTS[budget]}${
       cuisineTrim ? `\n- Type de cuisine souhaité : ${cuisineTrim}` : ""
