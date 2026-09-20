@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from "react";
 import {
   MapPin,
   RefreshCw,
@@ -111,6 +111,26 @@ function getISOWeek(date) {
   d.setUTCDate(d.getUTCDate() + 4 - dayNum);
   const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
   return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+}
+
+// Index (0=Lundi..6=Dimanche) du jour réel actuel dans la semaine générée à
+// generatedAtISO. Si aujourd'hui tombe hors de cette semaine (ex: on
+// consulte une entrée de l'historique), repli sur Lundi (0).
+function calculerJourActifIndex(generatedAtISO) {
+  if (!generatedAtISO) return 0;
+  const genDate = new Date(generatedAtISO);
+  if (Number.isNaN(genDate.getTime())) return 0;
+
+  const decalageLundi = (genDate.getDay() + 6) % 7; // 0 si genDate est un lundi
+  const lundiSemaine = new Date(genDate);
+  lundiSemaine.setHours(0, 0, 0, 0);
+  lundiSemaine.setDate(lundiSemaine.getDate() - decalageLundi);
+
+  const aujourdhui = new Date();
+  aujourdhui.setHours(0, 0, 0, 0);
+
+  const diffJours = Math.round((aujourdhui - lundiSemaine) / 86400000);
+  return diffJours >= 0 && diffJours <= 6 ? diffJours : 0;
 }
 
 function makeDefaultPersonne(id, nom) {
@@ -297,6 +317,11 @@ export default function CarnetDeCourses() {
   const [fallbackAnswer, setFallbackAnswer] = useState("");
   const [fallbackError, setFallbackError] = useState(null);
   const [fallbackCopied, setFallbackCopied] = useState(false);
+  const [jourActifIndex, setJourActifIndex] = useState(0);
+  const [carouselHeight, setCarouselHeight] = useState(null);
+  const carouselRef = useRef(null);
+  const carteRefs = useRef([]);
+  const scrollDebounceRef = useRef(null);
 
   const nextPersonneId = useRef(2);
 
@@ -705,7 +730,7 @@ ${exempleSemaine}
     await persistState({ data: nextData });
   };
 
-  const toggleFixe = async (field) => {
+  const toggleFixe = async (field, jourIdx) => {
     if (viewIndex !== null || !data) return;
     if (repasFixes[field]) {
       const nextFixes = { ...repasFixes, [field]: null };
@@ -713,7 +738,7 @@ ${exempleSemaine}
       await persistState({ repasFixes: nextFixes });
       return;
     }
-    const valeur = data.semaine[0][field];
+    const valeur = data.semaine[jourIdx][field];
     const nextFixes = { ...repasFixes, [field]: valeur };
     const nextData = { ...data, semaine: data.semaine.map((j) => ({ ...j, [field]: valeur })) };
     setRepasFixes(nextFixes);
@@ -734,6 +759,49 @@ ${exempleSemaine}
   // Les repas affichés dépendent du réglage utilisé au moment de la génération
   // de cette entrée précise (utile pour l'historique, généré avec un autre réglage).
   const mealsPourAffichage = MEALS_CONFIGS[activeEntry.contexteUtilise?.repasParJour] || mealsAtual;
+
+  // Identifiant de la semaine actuellement affichée (sert à la fois de clé de
+  // reset et de base pour retrouver le jour réel d'aujourd'hui dans cette semaine).
+  const generatedAtActif = viewIndex === null ? generatedAt : historique[viewIndex]?.id || null;
+
+  const allerAuJour = useCallback((index, comportement) => {
+    setJourActifIndex(index);
+    const conteneur = carouselRef.current;
+    if (conteneur) {
+      conteneur.scrollTo({ left: index * conteneur.offsetWidth, behavior: comportement });
+    }
+  }, []);
+
+  // Ouvre automatiquement sur le jour réel actuel à chaque arrivée sur
+  // l'onglet Menus et à chaque nouvelle génération (repli sur Lundi si la
+  // semaine affichée ne couvre pas la date d'aujourd'hui, ex: historique).
+  useEffect(() => {
+    if (activeTab !== "menus") return;
+    const index = calculerJourActifIndex(generatedAtActif);
+    setJourActifIndex(index);
+    // Positionnement instantané (pas d'animation) à l'arrivée sur l'onglet.
+    requestAnimationFrame(() => {
+      const conteneur = carouselRef.current;
+      if (conteneur) conteneur.scrollTo({ left: index * conteneur.offsetWidth, behavior: "auto" });
+    });
+  }, [activeTab, generatedAtActif]);
+
+  // La carte affichée occupe toute la largeur ; le carrousel adapte sa
+  // hauteur à celle de la carte du jour actif (pas la plus haute de la semaine).
+  useLayoutEffect(() => {
+    const carte = carteRefs.current[jourActifIndex];
+    if (carte) setCarouselHeight(carte.offsetHeight);
+  }, [jourActifIndex, activeEntry.data, mealsPourAffichage, editingKey]);
+
+  const handleCarouselScroll = () => {
+    const conteneur = carouselRef.current;
+    if (!conteneur) return;
+    if (scrollDebounceRef.current) clearTimeout(scrollDebounceRef.current);
+    scrollDebounceRef.current = setTimeout(() => {
+      const index = Math.round(conteneur.scrollLeft / conteneur.offsetWidth);
+      setJourActifIndex((prev) => (prev === index ? prev : index));
+    }, 100);
+  };
 
   const resumeNutritionnel = useMemo(() => {
     if (!activeEntry.data) return null;
@@ -1191,101 +1259,151 @@ ${exempleSemaine}
                 </div>
               )}
 
-              <div style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 8 }}>
+              <div
+                ref={carouselRef}
+                onScroll={handleCarouselScroll}
+                style={{
+                  display: "flex",
+                  overflowX: "auto",
+                  overflowY: "hidden",
+                  scrollSnapType: "x mandatory",
+                  WebkitOverflowScrolling: "touch",
+                  height: carouselHeight ? `${carouselHeight}px` : "auto",
+                  transition: "height 180ms ease",
+                }}
+              >
                 {activeEntry.data.semaine.map((jour, jourIdx) => (
                   <div
                     key={jour.jour}
-                    style={{
-                      flex: "0 0 190px",
-                      background: "#26362C",
-                      border: "1px solid #2E3F33",
-                      borderRadius: 10,
-                      padding: 12,
-                    }}
+                    style={{ flex: "0 0 100%", minWidth: 0, scrollSnapAlign: "start", scrollSnapStop: "always" }}
                   >
-                    <div style={{ fontSize: 12, fontWeight: 600, color: "#D9A441", marginBottom: 8 }}>
-                      {jour.jour}
-                    </div>
-                    {mealsPourAffichage.map(({ key: field, label }) => {
-                      const val = jour[field];
-                      const editKey = `meal-${jourIdx}-${field}`;
-                      const estFige = !!repasFixes[field];
-                      return (
-                        <div key={field} style={{ marginBottom: 7 }}>
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "space-between",
-                              fontSize: 10,
-                              color: "#9CAB9C",
-                              textTransform: "uppercase",
-                              letterSpacing: 0.4,
-                            }}
-                          >
-                            <span>{label}</span>
-                            {activeEntry.editable && jourIdx === 0 && (
-                              <button
-                                onClick={() => toggleFixe(field)}
-                                title={estFige ? "Libérer ce repas" : "Garder ce repas toute la semaine"}
-                                style={{
-                                  background: "none",
-                                  border: "none",
-                                  padding: 12,
-                                  margin: -12,
-                                  cursor: "pointer",
-                                  color: estFige ? "#D9A441" : "#5A6E5E",
-                                  display: "flex",
-                                  alignItems: "center",
-                                  justifyContent: "center",
-                                }}
-                              >
-                                {estFige ? <Pin size={11} /> : <PinOff size={11} />}
-                              </button>
-                            )}
-                          </div>
-                          {editingKey === editKey ? (
-                            <input
-                              autoFocus
-                              value={editingValue}
-                              onChange={(e) => setEditingValue(e.target.value)}
-                              onBlur={() => commitEditMeal(jourIdx, field)}
-                              onKeyDown={(e) => e.key === "Enter" && commitEditMeal(jourIdx, field)}
-                              style={{
-                                width: "100%",
-                                background: "#1E2A22",
-                                border: "1px solid #D9A441",
-                                borderRadius: 4,
-                                padding: "3px 5px",
-                                color: "#F1EDE2",
-                                fontSize: 16,
-                                outline: "none",
-                                boxSizing: "border-box",
-                              }}
-                            />
-                          ) : (
+                    <div
+                      ref={(el) => {
+                        carteRefs.current[jourIdx] = el;
+                      }}
+                      style={{
+                        background: "#26362C",
+                        border: "1px solid #2E3F33",
+                        borderRadius: 12,
+                        padding: 18,
+                        marginRight: 2,
+                      }}
+                    >
+                      <div className="carnet-title" style={{ fontSize: 17, fontWeight: 600, color: "#D9A441", marginBottom: 12 }}>
+                        {jour.jour}
+                      </div>
+                      {mealsPourAffichage.map(({ key: field, label }) => {
+                        const val = jour[field];
+                        const editKey = `meal-${jourIdx}-${field}`;
+                        const estFige = !!repasFixes[field];
+                        return (
+                          <div key={field} style={{ marginBottom: 12 }}>
                             <div
-                              onClick={() => activeEntry.editable && startEditMeal(jourIdx, field, val)}
                               style={{
-                                fontSize: 12.5,
-                                lineHeight: 1.4,
-                                cursor: activeEntry.editable ? "text" : "default",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                fontSize: 11,
+                                color: "#9CAB9C",
+                                textTransform: "uppercase",
+                                letterSpacing: 0.4,
                               }}
                             >
-                              {val}
+                              <span>{label}</span>
+                              {activeEntry.editable && jourIdx === jourActifIndex && (
+                                <button
+                                  onClick={() => toggleFixe(field, jourIdx)}
+                                  title={estFige ? "Libérer ce repas" : "Garder ce repas toute la semaine"}
+                                  style={{
+                                    background: "none",
+                                    border: "none",
+                                    padding: 12,
+                                    margin: -12,
+                                    cursor: "pointer",
+                                    color: estFige ? "#D9A441" : "#5A6E5E",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                  }}
+                                >
+                                  {estFige ? <Pin size={13} /> : <PinOff size={13} />}
+                                </button>
+                              )}
                             </div>
-                          )}
+                            {editingKey === editKey ? (
+                              <input
+                                autoFocus
+                                value={editingValue}
+                                onChange={(e) => setEditingValue(e.target.value)}
+                                onBlur={() => commitEditMeal(jourIdx, field)}
+                                onKeyDown={(e) => e.key === "Enter" && commitEditMeal(jourIdx, field)}
+                                style={{
+                                  width: "100%",
+                                  background: "#1E2A22",
+                                  border: "1px solid #D9A441",
+                                  borderRadius: 4,
+                                  padding: "5px 7px",
+                                  color: "#F1EDE2",
+                                  fontSize: 16,
+                                  outline: "none",
+                                  boxSizing: "border-box",
+                                }}
+                              />
+                            ) : (
+                              <div
+                                onClick={() => activeEntry.editable && startEditMeal(jourIdx, field, val)}
+                                style={{
+                                  fontSize: 14.5,
+                                  lineHeight: 1.4,
+                                  cursor: activeEntry.editable ? "text" : "default",
+                                }}
+                              >
+                                {val}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                      {(jour.kcal || jour.prot) && (
+                        <div style={{ fontSize: 12, color: "#7C8C7E", marginTop: 6, paddingTop: 10, borderTop: "1px solid #2E3F33" }}>
+                          {jour.kcal ? `≈${jour.kcal} kcal` : ""}
+                          {jour.kcal && jour.prot ? " · " : ""}
+                          {jour.prot ? `${jour.prot}g prot` : ""}
                         </div>
-                      );
-                    })}
-                    {(jour.kcal || jour.prot) && (
-                      <div style={{ fontSize: 10.5, color: "#7C8C7E", marginTop: 4, paddingTop: 6, borderTop: "1px solid #2E3F33" }}>
-                        {jour.kcal ? `≈${jour.kcal} kcal` : ""}
-                        {jour.kcal && jour.prot ? " · " : ""}
-                        {jour.prot ? `${jour.prot}g prot` : ""}
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
+                ))}
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "center", gap: 2, marginTop: 12 }}>
+                {activeEntry.data.semaine.map((jour, i) => (
+                  <button
+                    key={jour.jour}
+                    onClick={() => allerAuJour(i, Math.abs(i - jourActifIndex) <= 1 ? "smooth" : "auto")}
+                    aria-label={jour.jour}
+                    title={jour.jour}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      padding: 10,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <span
+                      style={{
+                        display: "block",
+                        width: i === jourActifIndex ? 18 : 7,
+                        height: 7,
+                        borderRadius: 4,
+                        background: i === jourActifIndex ? "#D9A441" : "#3C4E40",
+                        transition: "width 150ms ease, background 150ms ease",
+                      }}
+                    />
+                  </button>
                 ))}
               </div>
             </>
