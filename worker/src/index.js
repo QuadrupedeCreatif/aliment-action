@@ -1,7 +1,7 @@
 const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models";
 // Modèle Gemini gratuit (Flash). Vérifie/ajuste ce nom sur https://aistudio.google.com
 // si Google en propose un plus récent au moment où tu lis ceci.
-const GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_MODEL = "gemini-3.6-flash";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
