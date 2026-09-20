@@ -275,6 +275,10 @@ export default function CarnetDeCourses() {
   const [editingValue, setEditingValue] = useState("");
   const [copied, setCopied] = useState(false);
   const [activeTab, setActiveTab] = useState("reglages");
+  const [fallbackPrompt, setFallbackPrompt] = useState(null);
+  const [fallbackAnswer, setFallbackAnswer] = useState("");
+  const [fallbackError, setFallbackError] = useState(null);
+  const [fallbackCopied, setFallbackCopied] = useState(false);
 
   const nextPersonneId = useRef(2);
 
@@ -362,14 +366,11 @@ export default function CarnetDeCourses() {
     }
   };
 
-  const genererListe = async () => {
-    if (!goalId) return;
-    setLoading(true);
-    setError(null);
-
+  // Construit le contexte partagé (foyer, objectif, saison, budget...) utilisé à la
+  // fois par le flux automatique (Gemini) et par le prompt de secours (Claude manuel).
+  const construireContexte = () => {
     const goal = GOALS.find((g) => g.id === goalId);
     const paysLabel = pays.trim() || "France";
-    const localisationLabel = paysLabel;
     const exclusionsTrim = exclusions.trim();
     const cuisineTrim = cuisine.trim();
     const meals = mealsAtual;
@@ -390,6 +391,79 @@ export default function CarnetDeCourses() {
     }${exclusionsTrim ? `\n- À éviter absolument (allergies/préférences) : ${exclusionsTrim}` : ""}${
       semainePrecedente ? `\n- Repas de la semaine précédente, à varier (évite de répéter les mêmes associations) : ${semainePrecedente}` : ""
     }\n- Table de référence nutritionnelle (kcal/protéines pour 100g, aliments courants — appuie-toi dessus pour tes choix) : ${formatFoodTableForPrompt()}`;
+
+    return { goal, meals, contexte };
+  };
+
+  // Applique poids cru (crudifie) et les repas figés (repasFixes) à une semaine brute
+  // — utilisé à la fois pour la réponse Gemini et pour la réponse collée manuellement.
+  const nettoyerSemaine = (semaineBrute, meals) =>
+    semaineBrute.map((j) => {
+      const jour = { jour: j.jour, kcal: j.kcal, prot: j.prot };
+      for (const m of meals) {
+        jour[m.key] = repasFixes[m.key] || crudifie(j[m.key]);
+      }
+      return jour;
+    });
+
+  const nettoyerListeCourses = (listeCoursesBrute) =>
+    listeCoursesBrute.map((cat) => ({
+      categorie: cat.categorie,
+      articles: (cat.articles || []).map(crudifie),
+    }));
+
+  // Enregistre le résultat final (semaine + liste de courses déjà nettoyées) et
+  // l'affiche, que la génération vienne du Worker (Gemini) ou du mode de secours
+  // (réponse Claude collée manuellement).
+  const finaliserGeneration = async (semaineNettoyee, listeCoursesNettoyee, goalLabel) => {
+    const parsed = { semaine: semaineNettoyee, liste_courses: listeCoursesNettoyee };
+    const ts = new Date().toISOString();
+    const ctx = {
+      mois: moisLabel,
+      localisation: pays.trim() || "France",
+      objectif: goalLabel,
+      repasParJour,
+      cibleFoyer: { kcal: cibleFoyer.kcal, prot: cibleFoyer.prot, nbPersonnes: cibleFoyer.nbPersonnes },
+    };
+
+    // Historique : on range l'ancienne semaine actuelle avant de la remplacer (max 4 conservées)
+    const nouvelHistorique = data
+      ? [{ id: generatedAt || ts, contexteUtilise, data, checked }, ...historique].slice(0, 4)
+      : historique;
+
+    setData(parsed);
+    setChecked({});
+    setGeneratedAt(ts);
+    setContexteUtilise(ctx);
+    setHistorique(nouvelHistorique);
+    setViewIndex(null);
+    setActiveTab("menus");
+    await persist({
+      goalId,
+      pays,
+      exclusions,
+      personnes,
+      repasParJour,
+      budget,
+      cuisine,
+      repasFixes,
+      data: parsed,
+      checked: {},
+      generatedAt: ts,
+      contexteUtilise: ctx,
+      historique: nouvelHistorique,
+    });
+  };
+
+  const genererListe = async () => {
+    if (!goalId) return;
+    setLoading(true);
+    setError(null);
+    setFallbackPrompt(null);
+    setFallbackAnswer("");
+    setFallbackError(null);
+
+    const { goal, meals, contexte } = construireContexte();
 
     try {
       // Étape 1 — menus, scindée en 2 appels (début/fin de semaine) pour rester dans le budget de réponse
@@ -432,19 +506,11 @@ ${exemple}
         throw new Error(`menus 2/2 — ${e.message}`);
       }
 
-      const menusData = {
-        semaine: [...menusData1.semaine, ...menusData2.semaine].map((j) => {
-          const jour = { jour: j.jour, kcal: j.kcal, prot: j.prot };
-          for (const m of meals) {
-            jour[m.key] = repasFixes[m.key] || crudifie(j[m.key]);
-          }
-          return jour;
-        }),
-      };
+      const menusSemaine = nettoyerSemaine([...menusData1.semaine, ...menusData2.semaine], meals);
 
       // Étape 2 — liste de courses dérivée des menus ci-dessus
       setLoadingStep("Construction de la liste de courses...");
-      const resumeMenus = menusData.semaine
+      const resumeMenus = menusSemaine
         .map((j) => `${j.jour}: ${meals.map((m) => `${m.label.toLowerCase()}: ${j[m.key]}`).join(" / ")}`)
         .join("\n");
 
@@ -476,55 +542,85 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
         throw new Error(`liste de courses — ${e.message}`);
       }
 
-      const parsed = {
-        semaine: menusData.semaine,
-        liste_courses: listeData.liste_courses.map((cat) => ({
-          categorie: cat.categorie,
-          articles: cat.articles.map(crudifie),
-        })),
-      };
-      const ts = new Date().toISOString();
-      const ctx = {
-        mois: moisLabel,
-        localisation: localisationLabel,
-        objectif: goal.label,
-        repasParJour,
-        cibleFoyer: { kcal: cibleFoyer.kcal, prot: cibleFoyer.prot, nbPersonnes: cibleFoyer.nbPersonnes },
-      };
-
-      // Historique : on range l'ancienne semaine actuelle avant de la remplacer (max 4 conservées)
-      const nouvelHistorique = data
-        ? [{ id: generatedAt || ts, contexteUtilise, data, checked }, ...historique].slice(0, 4)
-        : historique;
-
-      setData(parsed);
-      setChecked({});
-      setGeneratedAt(ts);
-      setContexteUtilise(ctx);
-      setHistorique(nouvelHistorique);
-      setViewIndex(null);
-      setActiveTab("menus");
-      await persist({
-        goalId,
-        pays,
-        exclusions,
-        personnes,
-        repasParJour,
-        budget,
-        cuisine,
-        repasFixes,
-        data: parsed,
-        checked: {},
-        generatedAt: ts,
-        contexteUtilise: ctx,
-        historique: nouvelHistorique,
-      });
+      const listeCoursesNettoyee = nettoyerListeCourses(listeData.liste_courses);
+      await finaliserGeneration(menusSemaine, listeCoursesNettoyee, goal.label);
     } catch (e) {
       setError(`La génération a échoué : ${e.message || "erreur inconnue"}. Réessaie.`);
     } finally {
       setLoading(false);
       setLoadingStep("");
     }
+  };
+
+  const essayerViaClaude = () => {
+    const { goal, meals, contexte } = construireContexte();
+    const joursListe = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"];
+    const champsExemple = meals.map((m) => `"${m.key}": "..."`).join(", ");
+    const exempleSemaine = joursListe
+      .map((j) => `    {"jour": "${j}", ${champsExemple}, "kcal": 2200, "prot": 140}`)
+      .join(",\n");
+    const listeRepasTexte = meals.map((m) => m.label.toLowerCase()).join(", ");
+
+    const prompt = `Tu es un nutritionniste pragmatique qui aide un foyer à composer ses repas ET sa liste de courses pour une semaine complète, en une seule réponse.
+
+Contexte :
+${contexte}
+
+Étape 1 — Menus : pour chaque jour de la semaine (Lundi à Dimanche) et chaque repas (${listeRepasTexte}), donne une courte association d'aliments AVEC quantités précises AU NIVEAU DU FOYER (une seule quantité lisible par aliment pour tout le foyer, pas de détail par personne dans le texte), en priorisant les légumes/fruits de saison, la table de référence nutritionnelle, et en respectant les aliments à éviter le cas échéant. TOUTES les quantités sont en poids CRU, tel qu'acheté et pesé avant cuisson — n'écris JAMAIS le mot "cuit(es)" ni un poids cuit (particulièrement important pour le riz et les pâtes, qui doublent de poids à la cuisson : utilise leur poids sec, ex "80g riz cru", "90g pâtes crues"). Format quantité : grammes pour le solide, cl pour le liquide, pièces pour les fruits/légumes entiers, cuillères pour les condiments. Reste concis, 3 aliments max par repas. Ajoute pour chaque jour une estimation kcal et prot (nombres entiers) pour le foyer entier.
+
+Étape 2 — Liste de courses : à partir de ces mêmes menus, construis la liste de courses cumulée pour les 7 jours et pour TOUT LE FOYER (pas une seule personne), en tenant compte du nombre de personnes et de leurs besoins caloriques respectifs indiqués ci-dessus. Additionne les quantités, évite les doublons. TOUJOURS en poids CRU, jamais "cuit(es)". Maximum 5 catégories, maximum 6 articles par catégorie. Chaque article est une seule chaîne courte "nom + quantité totale" (ex: "Poulet 600g", "Riz basmati 1kg", "Brocolis 2 têtes").
+
+Réponds UNIQUEMENT avec ce JSON complet, rien d'autre, pas de \`\`\`, pas de phrase avant ou après :
+{
+  "semaine": [
+${exempleSemaine}
+  ],
+  "liste_courses": [
+    {"categorie": "Fruits & légumes", "articles": ["...", "..."]},
+    {"categorie": "Protéines", "articles": ["...", "..."]},
+    {"categorie": "Féculents & céréales", "articles": ["...", "..."]},
+    {"categorie": "Produits laitiers & œufs", "articles": ["...", "..."]},
+    {"categorie": "Épicerie", "articles": ["...", "..."]}
+  ]
+}`;
+
+    setFallbackPrompt(prompt);
+    setFallbackAnswer("");
+    setFallbackError(null);
+  };
+
+  const copierPromptSecours = async () => {
+    try {
+      await navigator.clipboard.writeText(fallbackPrompt || "");
+      setFallbackCopied(true);
+      setTimeout(() => setFallbackCopied(false), 2000);
+    } catch (e) {
+      // best effort
+    }
+  };
+
+  const validerReponseSecours = async () => {
+    const match = fallbackAnswer.match(/\{[\s\S]*\}/);
+    let parsedManual = null;
+    if (match) {
+      try {
+        parsedManual = JSON.parse(match[0]);
+      } catch (e) {
+        parsedManual = null;
+      }
+    }
+    if (!parsedManual || !Array.isArray(parsedManual.semaine) || !Array.isArray(parsedManual.liste_courses)) {
+      setFallbackError("Le texte collé n'est pas un JSON valide, réessaie en collant toute la réponse de Claude.");
+      return;
+    }
+    setFallbackError(null);
+    const { goal, meals } = construireContexte();
+    const semaineNettoyee = nettoyerSemaine(parsedManual.semaine, meals);
+    const listeCoursesNettoyee = nettoyerListeCourses(parsedManual.liste_courses);
+    await finaliserGeneration(semaineNettoyee, listeCoursesNettoyee, goal.label);
+    setFallbackPrompt(null);
+    setFallbackAnswer("");
+    setError(null);
   };
 
   const persistState = useCallback(
@@ -911,6 +1007,130 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
 
       {error && (
         <div style={{ marginTop: 10, fontSize: 13, color: "#C77B5F" }}>{error}</div>
+      )}
+
+      {error && (
+        <button
+          onClick={essayerViaClaude}
+          style={{
+            marginTop: 10,
+            width: "100%",
+            background: "transparent",
+            border: "1px solid #D9A441",
+            borderRadius: 10,
+            padding: "12px 14px",
+            color: "#D9A441",
+            fontSize: 14,
+            fontWeight: 600,
+            cursor: "pointer",
+          }}
+        >
+          Essayer via Claude à la place
+        </button>
+      )}
+
+      {fallbackPrompt && (
+        <div
+          style={{
+            marginTop: 14,
+            background: "#26362C",
+            border: "1px solid #2E3F33",
+            borderRadius: 10,
+            padding: 14,
+          }}
+        >
+          <div style={{ fontSize: 12, color: "#9CAB9C", marginBottom: 10, lineHeight: 1.6 }}>
+            1. Copie ce texte
+            <br />
+            2. Colle-le dans l'appli Claude sur ton téléphone
+            <br />
+            3. Copie sa réponse en entier
+            <br />
+            4. Reviens ici et colle-la ci-dessous
+          </div>
+
+          <textarea
+            readOnly
+            value={fallbackPrompt}
+            style={{
+              width: "100%",
+              minHeight: 140,
+              background: "#1E2A22",
+              border: "1px solid #3C4E40",
+              borderRadius: 8,
+              padding: 10,
+              color: "#F1EDE2",
+              fontSize: 16,
+              boxSizing: "border-box",
+              resize: "vertical",
+              fontFamily: "inherit",
+            }}
+          />
+          <button
+            onClick={copierPromptSecours}
+            style={{
+              marginTop: 8,
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              background: "transparent",
+              border: "1px solid #3C4E40",
+              borderRadius: 7,
+              padding: "10px 14px",
+              color: fallbackCopied ? "#D9A441" : "#9CAB9C",
+              fontSize: 12.5,
+              cursor: "pointer",
+            }}
+          >
+            {fallbackCopied ? <ClipboardCheck size={13} /> : <Copy size={13} />}
+            {fallbackCopied ? "Copié" : "Copier le prompt"}
+          </button>
+
+          <div style={{ marginTop: 16, marginBottom: 6, fontSize: 13, color: "#9CAB9C" }}>
+            Réponse de Claude
+          </div>
+          <textarea
+            value={fallbackAnswer}
+            onChange={(e) => setFallbackAnswer(e.target.value)}
+            placeholder="Colle ici la réponse de Claude"
+            style={{
+              width: "100%",
+              minHeight: 140,
+              background: "#1E2A22",
+              border: "1px solid #3C4E40",
+              borderRadius: 8,
+              padding: 10,
+              color: "#F1EDE2",
+              fontSize: 16,
+              boxSizing: "border-box",
+              resize: "vertical",
+              fontFamily: "inherit",
+            }}
+          />
+
+          {fallbackError && (
+            <div style={{ marginTop: 8, fontSize: 13, color: "#C77B5F" }}>{fallbackError}</div>
+          )}
+
+          <button
+            onClick={validerReponseSecours}
+            disabled={!fallbackAnswer.trim()}
+            style={{
+              marginTop: 10,
+              width: "100%",
+              background: fallbackAnswer.trim() ? "#D9A441" : "#3C4E40",
+              color: fallbackAnswer.trim() ? "#1E2A22" : "#9CAB9C",
+              border: "none",
+              borderRadius: 10,
+              padding: "13px 16px",
+              fontSize: 15,
+              fontWeight: 600,
+              cursor: fallbackAnswer.trim() ? "pointer" : "default",
+            }}
+          >
+            Valider cette réponse
+          </button>
+        </div>
       )}
       </>
       )}
