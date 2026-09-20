@@ -328,18 +328,20 @@ export default function CarnetDeCourses() {
 
   const mealsAtual = MEALS_CONFIGS[repasParJour] || MEALS_CONFIGS[DEFAULT_REPAS_PAR_JOUR];
 
+  // Formes fonctionnelles (prev => ...) partout : évite de perdre une mise à
+  // jour d'un profil si plusieurs changements arrivent rapprochés (closure
+  // figée sur un ancien `personnes` sinon).
   const addPersonne = () => {
     const id = nextPersonneId.current++;
-    setPersonnes([...personnes, makeDefaultPersonne(id, `Personne ${personnes.length + 1}`)]);
+    setPersonnes((prev) => [...prev, makeDefaultPersonne(id, `Personne ${prev.length + 1}`)]);
   };
 
   const removePersonne = (id) => {
-    if (personnes.length <= 1) return;
-    setPersonnes(personnes.filter((p) => p.id !== id));
+    setPersonnes((prev) => (prev.length <= 1 ? prev : prev.filter((p) => p.id !== id)));
   };
 
   const updatePersonneField = (id, field, value) => {
-    setPersonnes(personnes.map((p) => (p.id === id ? { ...p, [field]: value } : p)));
+    setPersonnes((prev) => prev.map((p) => (p.id === id ? { ...p, [field]: value } : p)));
   };
 
   const callClaude = async (prompt) => {
