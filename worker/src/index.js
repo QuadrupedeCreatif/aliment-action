@@ -1,6 +1,7 @@
-const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_MODEL = "claude-sonnet-5";
-const ANTHROPIC_MAX_TOKENS = 1000;
+const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models";
+// Modèle Gemini gratuit (Flash). Vérifie/ajuste ce nom sur https://aistudio.google.com
+// si Google en propose un plus récent au moment où tu lis ceci.
+const GEMINI_MODEL = "gemini-2.5-flash";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -39,31 +40,42 @@ export default {
       });
     }
 
-    if (!env.ANTHROPIC_API_KEY) {
-      return new Response(JSON.stringify({ error: "ANTHROPIC_API_KEY non configurée sur le Worker" }), {
+    if (!env.GEMINI_API_KEY) {
+      return new Response(JSON.stringify({ error: "GEMINI_API_KEY non configurée sur le Worker" }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    const anthropicResponse = await fetch(ANTHROPIC_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": env.ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: ANTHROPIC_MODEL,
-        max_tokens: ANTHROPIC_MAX_TOKENS,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    });
+    const geminiResponse = await fetch(
+      `${GEMINI_URL}/${GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+        }),
+      }
+    );
 
-    const responseBody = await anthropicResponse.text();
+    if (!geminiResponse.ok) {
+      const errorBody = await geminiResponse.text();
+      return new Response(errorBody, {
+        status: geminiResponse.status,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
-    return new Response(responseBody, {
-      status: anthropicResponse.status,
+    const geminiJson = await geminiResponse.json();
+    const text = geminiJson?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+    // On reformate dans la forme attendue par le front (compatible avec l'ancien
+    // format Anthropic : { content: [{ type: "text", text }] }) pour ne rien
+    // avoir à changer côté carnet-de-courses.jsx.
+    const compatBody = { content: [{ type: "text", text }] };
+
+    return new Response(JSON.stringify(compatBody), {
+      status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   },
