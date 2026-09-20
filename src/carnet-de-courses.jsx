@@ -13,6 +13,9 @@ import {
   ClipboardCheck,
   Plus,
   X,
+  Settings,
+  UtensilsCrossed,
+  History,
 } from "lucide-react";
 import {
   MEALS_CONFIGS,
@@ -48,6 +51,13 @@ const BUDGET_PROMPT_HINTS = {
 };
 
 const REPAS_OPTIONS = [3, 4, 5];
+
+const TABS = [
+  { id: "reglages", label: "Réglages", Icon: Settings },
+  { id: "menus", label: "Menus", Icon: UtensilsCrossed },
+  { id: "courses", label: "Courses", Icon: ShoppingBasket },
+  { id: "historique", label: "Historique", Icon: History },
+];
 
 const ACTIVITE_OPTIONS = Object.keys(ACTIVITY_FACTORS);
 const SEXE_OPTIONS = ["H", "F"];
@@ -264,6 +274,7 @@ export default function CarnetDeCourses() {
   const [editingKey, setEditingKey] = useState(null);
   const [editingValue, setEditingValue] = useState("");
   const [copied, setCopied] = useState(false);
+  const [activeTab, setActiveTab] = useState("reglages");
 
   const nextPersonneId = useRef(2);
 
@@ -277,6 +288,7 @@ export default function CarnetDeCourses() {
         setPays(saved.pays || "France");
         setExclusions(saved.exclusions || "");
         setData(saved.data || null);
+        setActiveTab(saved.data ? "menus" : "reglages");
         setChecked(saved.checked || {});
         setGeneratedAt(saved.generatedAt || null);
         setContexteUtilise(saved.contexteUtilise || null);
@@ -491,6 +503,7 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
       setContexteUtilise(ctx);
       setHistorique(nouvelHistorique);
       setViewIndex(null);
+      setActiveTab("menus");
       await persist({
         goalId,
         pays,
@@ -651,7 +664,7 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
         color: "#F1EDE2",
         minHeight: "100%",
         padding:
-          "calc(20px + env(safe-area-inset-top, 0px)) 16px calc(48px + env(safe-area-inset-bottom, 0px)) 16px",
+          "calc(20px + env(safe-area-inset-top, 0px)) 16px calc(100px + env(safe-area-inset-bottom, 0px)) 16px",
         boxSizing: "border-box",
       }}
     >
@@ -692,6 +705,8 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
         </div>
       </div>
 
+      {activeTab === "reglages" && (
+      <>
       {/* Pays */}
       <div style={{ marginBottom: 18 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#9CAB9C", marginBottom: 6 }}>
@@ -897,49 +912,14 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
       {error && (
         <div style={{ marginTop: 10, fontSize: 13, color: "#C77B5F" }}>{error}</div>
       )}
+      </>
+      )}
 
-      {/* Résultats */}
-      {(data || historique.length > 0) && (
-        <div style={{ marginTop: 28 }}>
-          {historique.length > 0 && (
-            <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 14, paddingBottom: 2 }}>
-              {data && (
-                <button
-                  onClick={() => setViewIndex(null)}
-                  style={{
-                    flexShrink: 0,
-                    fontSize: 11.5,
-                    padding: "11px 14px",
-                    borderRadius: 20,
-                    border: viewIndex === null ? "1px solid #D9A441" : "1px solid #2E3F33",
-                    background: viewIndex === null ? "#3C4E40" : "#26362C",
-                    color: "#F1EDE2",
-                    cursor: "pointer",
-                  }}
-                >
-                  Semaine actuelle
-                </button>
-              )}
-              {historique.map((h, i) => (
-                <button
-                  key={h.id}
-                  onClick={() => setViewIndex(i)}
-                  style={{
-                    flexShrink: 0,
-                    fontSize: 11.5,
-                    padding: "11px 14px",
-                    borderRadius: 20,
-                    border: viewIndex === i ? "1px solid #D9A441" : "1px solid #2E3F33",
-                    background: viewIndex === i ? "#3C4E40" : "#26362C",
-                    color: "#9CAB9C",
-                    cursor: "pointer",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {new Date(h.id).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}
-                  {h.contexteUtilise ? ` · ${h.contexteUtilise.objectif}` : ""}
-                </button>
-              ))}
+      {activeTab === "menus" && (
+        <div>
+          {!activeEntry.data && (
+            <div style={{ fontSize: 13, color: "#9CAB9C", textAlign: "center", padding: "40px 10px" }}>
+              Aucun menu pour l'instant. Va dans l'onglet Réglages pour générer ta semaine.
             </div>
           )}
 
@@ -956,6 +936,7 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
               Généré pour <span style={{ color: "#D9A441" }}>{activeEntry.contexteUtilise.objectif.toLowerCase()}</span> ·{" "}
               <span style={{ textTransform: "capitalize" }}>{activeEntry.contexteUtilise.mois}</span> ·{" "}
               {activeEntry.contexteUtilise.localisation}
+              {viewIndex !== null ? " · lecture seule (historique)" : ""}
             </div>
           )}
 
@@ -975,7 +956,7 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
                 </div>
               )}
 
-              <div style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 8, marginBottom: 24 }}>
+              <div style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 8 }}>
                 {activeEntry.data.semaine.map((jour, jourIdx) => (
                   <div
                     key={jour.jour}
@@ -1072,7 +1053,20 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
                   </div>
                 ))}
               </div>
+            </>
+          )}
+        </div>
+      )}
 
+      {activeTab === "courses" && (
+        <div>
+          {!activeEntry.data && (
+            <div style={{ fontSize: 13, color: "#9CAB9C", textAlign: "center", padding: "40px 10px" }}>
+              Aucune liste de courses pour l'instant. Génère ta semaine depuis l'onglet Réglages.
+            </div>
+          )}
+          {activeEntry.data && (
+            <>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <div className="carnet-title" style={{ fontSize: 17, fontWeight: 600 }}>
                   Liste de courses
@@ -1206,10 +1200,103 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
         </div>
       )}
 
+      {activeTab === "historique" && (
+        <div>
+          {!data && historique.length === 0 && (
+            <div style={{ fontSize: 13, color: "#9CAB9C", textAlign: "center", padding: "40px 10px" }}>
+              Aucune semaine précédente pour l'instant.
+            </div>
+          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {data && (
+              <button
+                onClick={() => {
+                  setViewIndex(null);
+                  setActiveTab("menus");
+                }}
+                style={{
+                  textAlign: "left",
+                  padding: "14px 16px",
+                  borderRadius: 10,
+                  border: viewIndex === null ? "1px solid #D9A441" : "1px solid #2E3F33",
+                  background: viewIndex === null ? "#3C4E40" : "#26362C",
+                  color: "#F1EDE2",
+                  fontSize: 14,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Semaine actuelle
+              </button>
+            )}
+            {historique.map((h, i) => (
+              <button
+                key={h.id}
+                onClick={() => {
+                  setViewIndex(i);
+                  setActiveTab("menus");
+                }}
+                style={{
+                  textAlign: "left",
+                  padding: "14px 16px",
+                  borderRadius: 10,
+                  border: viewIndex === i ? "1px solid #D9A441" : "1px solid #2E3F33",
+                  background: viewIndex === i ? "#3C4E40" : "#26362C",
+                  color: "#F1EDE2",
+                  fontSize: 14,
+                  cursor: "pointer",
+                }}
+              >
+                {new Date(h.id).toLocaleDateString("fr-FR", { day: "numeric", month: "long" })}
+                {h.contexteUtilise ? ` · ${h.contexteUtilise.objectif}` : ""}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <style>{`
         .spin { animation: spin 1s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
       `}</style>
+
+      <nav
+        style={{
+          position: "fixed",
+          bottom: 0,
+          left: 0,
+          right: 0,
+          display: "flex",
+          background: "#26362C",
+          borderTop: "1px solid #2E3F33",
+          paddingBottom: "env(safe-area-inset-bottom, 0px)",
+          zIndex: 50,
+        }}
+      >
+        {TABS.map(({ id, label, Icon }) => (
+          <button
+            key={id}
+            onClick={() => setActiveTab(id)}
+            style={{
+              flex: 1,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 4,
+              minHeight: 52,
+              padding: "10px 4px",
+              background: "none",
+              border: "none",
+              color: activeTab === id ? "#D9A441" : "#9CAB9C",
+              cursor: "pointer",
+            }}
+          >
+            <Icon size={20} />
+            <span style={{ fontSize: 10.5 }}>{label}</span>
+          </button>
+        ))}
+      </nav>
     </div>
   );
 }
