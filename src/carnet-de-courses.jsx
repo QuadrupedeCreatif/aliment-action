@@ -4,7 +4,7 @@ import { MapPin, RefreshCw, Check, Loader2, ChevronRight, ShoppingBasket, Pin, P
 // Colle ici l'URL publique de ton Worker Cloudflare une fois déployé
 // (résultat de `npx wrangler deploy` dans le dossier /worker), ex :
 // "https://carnet-courses-worker.tonpseudo.workers.dev"
-const WORKER_URL = "https://COLLE-ICI-URL-DE-TON-WORKER.workers.dev";
+const WORKER_URL = "https://carnet-courses-worker.quentinchalono.workers.dev";
 
 const GOALS = [
   { id: "masse", label: "Prise de masse", desc: "Plus de calories, protéines et féculents" },
