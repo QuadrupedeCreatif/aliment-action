@@ -19,6 +19,10 @@ import {
   NotebookPen,
   ChevronLeft,
   Search,
+  ReceiptEuro,
+  Camera,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import {
   MEALS_CONFIGS,
@@ -63,8 +67,13 @@ const TABS = [
   { id: "menus", label: "Menus", Icon: UtensilsCrossed },
   { id: "courses", label: "Courses", Icon: ShoppingBasket },
   { id: "journal", label: "Journal", Icon: NotebookPen },
+  { id: "budget", label: "Budget", Icon: ReceiptEuro },
   { id: "historique", label: "Historique", Icon: History },
 ];
+
+// Mêmes 5 catégories que la liste de courses générée par l'IA, réutilisées
+// pour classer les lignes de ticket de caisse scannées.
+const CATEGORIES_TICKET = ["Fruits & légumes", "Protéines", "Féculents & céréales", "Produits laitiers & œufs", "Épicerie"];
 
 const ACTIVITE_OPTIONS = Object.keys(ACTIVITY_FACTORS);
 const SEXE_OPTIONS = ["H", "F"];
@@ -136,6 +145,60 @@ function formatJournalDate(iso) {
   if (iso === decalerJourISO(aujourdhui, -1)) return "Hier";
   const [y, m, j] = iso.split("-").map(Number);
   return new Date(y, m - 1, j).toLocaleDateString("fr-FR", { day: "numeric", month: "long" });
+}
+
+// Clé mensuelle "YYYY-MM" utilisée pour regrouper les dépenses du budget.
+function moisCourantCle() {
+  return ajourdhuiISO().slice(0, 7);
+}
+
+function moisCleVersLabel(cle) {
+  const [y, m] = cle.split("-").map(Number);
+  return `${MOIS_FR[m - 1]} ${y}`;
+}
+
+function genererId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function formatEuro(n) {
+  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(n || 0);
+}
+
+// Prompt partagé par le scan automatique (Worker + image) et le mode de
+// secours manuel (copié-collé dans l'appli Claude) — les deux consignes
+// doivent rester identiques.
+function construirePromptTicket() {
+  const categoriesTexte = CATEGORIES_TICKET.map((c) => `"${c}"`).join(", ");
+  return `Tu analyses la photo d'un ticket de caisse de supermarché.
+
+Extrais UNIQUEMENT les lignes correspondant à des produits ALIMENTAIRES (ignore tout produit non-alimentaire : hygiène, entretien, high-tech, vêtements, etc.). Pour chaque ligne alimentaire, donne : le nom du produit (nettoyé et lisible, pas l'abréviation brute du ticket), son prix en euros, et une catégorie parmi EXACTEMENT ces 5 valeurs : ${categoriesTexte}. Donne aussi la date du ticket si elle est visible, au format "YYYY-MM-DD" (sinon null), et le nom du magasin si visible (sinon null).
+
+Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase avant ou après :
+{"date": "YYYY-MM-DD ou null", "magasin": "nom du magasin ou null", "articles": [{"nom": "...", "prix": 0.00, "categorie": "..."}], "total": 0.00}`;
+}
+
+// Valide et normalise la réponse brute (scan auto ou collée manuellement) en
+// lignes exploitables par le tableau éditable. Retourne null si inexploitable.
+function extraireLignesTicket(resultat) {
+  if (!resultat || !Array.isArray(resultat.articles)) return null;
+  const lignes = resultat.articles.map((a) => ({
+    id: genererId(),
+    nom: (a?.nom || "").toString().trim() || "Article",
+    prix: Number.isFinite(parseFloat(a?.prix)) ? parseFloat(a.prix) : 0,
+    categorie: CATEGORIES_TICKET.includes(a?.categorie) ? a.categorie : CATEGORIES_TICKET[CATEGORIES_TICKET.length - 1],
+  }));
+  const date = typeof resultat.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(resultat.date) ? resultat.date : null;
+  const magasin = typeof resultat.magasin === "string" && resultat.magasin.trim() ? resultat.magasin.trim() : null;
+  return { lignes, date, magasin };
+}
+
+function repartitionParCategorie(lignes) {
+  const total = lignes.reduce((s, l) => s + (l.prix || 0), 0);
+  return CATEGORIES_TICKET.map((c) => {
+    const montant = lignes.filter((l) => l.categorie === c).reduce((s, l) => s + (l.prix || 0), 0);
+    return { categorie: c, montant, pct: total > 0 ? Math.round((montant / total) * 100) : 0 };
+  }).filter((r) => r.montant > 0);
 }
 
 function getISOWeek(date) {
@@ -363,6 +426,18 @@ export default function CarnetDeCourses() {
   const [journalManuelKcal, setJournalManuelKcal] = useState("");
   const [journalManuelProt, setJournalManuelProt] = useState("");
   const [journalManuelFibres, setJournalManuelFibres] = useState("");
+  const [depenses, setDepenses] = useState({});
+  const [ticketLoading, setTicketLoading] = useState(false);
+  const [ticketError, setTicketError] = useState(null);
+  const [ticketLignes, setTicketLignes] = useState(null);
+  const [ticketDate, setTicketDate] = useState(null);
+  const [ticketMagasin, setTicketMagasin] = useState(null);
+  const [ticketFallbackPrompt, setTicketFallbackPrompt] = useState(null);
+  const [ticketFallbackAnswer, setTicketFallbackAnswer] = useState("");
+  const [ticketFallbackError, setTicketFallbackError] = useState(null);
+  const [ticketFallbackCopied, setTicketFallbackCopied] = useState(false);
+  const [moisDeplies, setMoisDeplies] = useState({});
+  const ticketInputRef = useRef(null);
   const carouselRef = useRef(null);
   const carteRefs = useRef([]);
   const scrollDebounceRef = useRef(null);
@@ -385,6 +460,7 @@ export default function CarnetDeCourses() {
         setContexteUtilise(saved.contexteUtilise || null);
         setHistorique(saved.historique || []);
         setJournal(saved.journal || {});
+        setDepenses(saved.depenses || {});
         setRepasFixes(saved.repasFixes || {});
         setRepasParJour(saved.repasParJour || DEFAULT_REPAS_PAR_JOUR);
         setBudget(saved.budget || "normal");
@@ -432,11 +508,11 @@ export default function CarnetDeCourses() {
     setPersonnes((prev) => prev.map((p) => (p.id === id ? { ...p, [field]: value } : p)));
   };
 
-  const callClaude = async (prompt) => {
+  const callClaude = async (prompt, image) => {
     const response = await fetch(WORKER_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify(image ? { prompt, image } : { prompt }),
     });
     if (!response.ok) {
       const bodyText = await response.text().catch(() => "");
@@ -725,10 +801,11 @@ ${exempleSemaine}
         contexteUtilise,
         historique,
         journal,
+        depenses,
         ...overrides,
       });
     },
-    [persist, goalId, pays, exclusions, personnes, repasParJour, budget, cuisine, repasFixes, data, checked, generatedAt, contexteUtilise, historique, journal]
+    [persist, goalId, pays, exclusions, personnes, repasParJour, budget, cuisine, repasFixes, data, checked, generatedAt, contexteUtilise, historique, journal, depenses]
   );
 
   const journalSuggestions = journalQuery.trim() && !journalPicked ? rechercherAliment(journalQuery) : [];
@@ -797,6 +874,144 @@ ${exempleSemaine}
     const next = decalerJourISO(journalDate, delta);
     if (next > ajourdhuiISO()) return; // jamais dans le futur
     setJournalDate(next);
+  };
+
+  const moisCourant = moisCourantCle();
+  const depensesMoisCourant = depenses[moisCourant] || [];
+  const totalMoisCourant = depensesMoisCourant.reduce((s, d) => s + (d.prix || 0), 0);
+
+  const lireFichierEnBase64 = (file) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve((reader.result || "").toString().split(",")[1] || "");
+      reader.onerror = () => reject(new Error("Lecture du fichier impossible."));
+      reader.readAsDataURL(file);
+    });
+
+  const demarrerScanTicket = () => {
+    ticketInputRef.current?.click();
+  };
+
+  const scannerTicket = async (file) => {
+    setTicketLoading(true);
+    setTicketError(null);
+    setTicketLignes(null);
+    setTicketFallbackPrompt(null);
+    try {
+      const mimeType = file.type === "image/png" ? "image/png" : "image/jpeg";
+      const base64 = await lireFichierEnBase64(file);
+      const resultatBrut = await callClaude(construirePromptTicket(), { mimeType, data: base64 });
+      const extrait = extraireLignesTicket(resultatBrut);
+      if (!extrait || extrait.lignes.length === 0) {
+        throw new Error("Aucune ligne alimentaire détectée sur le ticket.");
+      }
+      setTicketLignes(extrait.lignes);
+      setTicketDate(extrait.date);
+      setTicketMagasin(extrait.magasin);
+    } catch (e) {
+      setTicketError(`Le scan a échoué : ${e.message || "erreur inconnue"}.`);
+    } finally {
+      setTicketLoading(false);
+    }
+  };
+
+  const handleTicketFileChange = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (file) scannerTicket(file);
+  };
+
+  const ouvrirSaisieManuelleTicket = () => {
+    setTicketError(null);
+    setTicketLignes([]);
+    setTicketDate(null);
+    setTicketMagasin(null);
+  };
+
+  const modifierLigneTicket = (id, champ, valeur) => {
+    setTicketLignes((prev) => (prev || []).map((l) => (l.id === id ? { ...l, [champ]: valeur } : l)));
+  };
+
+  const supprimerLigneTicket = (id) => {
+    setTicketLignes((prev) => (prev || []).filter((l) => l.id !== id));
+  };
+
+  const ajouterLigneTicketVide = () => {
+    setTicketLignes((prev) => [...(prev || []), { id: genererId(), nom: "", prix: 0, categorie: CATEGORIES_TICKET[CATEGORIES_TICKET.length - 1] }]);
+  };
+
+  const annulerTicket = () => {
+    setTicketLignes(null);
+    setTicketDate(null);
+    setTicketMagasin(null);
+    setTicketError(null);
+    setTicketFallbackPrompt(null);
+    setTicketFallbackAnswer("");
+    setTicketFallbackError(null);
+  };
+
+  const validerLignesTicket = async () => {
+    if (!ticketLignes) return;
+    const dateEntree = ticketDate || ajourdhuiISO();
+    const moisCle = dateEntree.slice(0, 7);
+    const nouvelles = ticketLignes
+      .filter((l) => l.nom.trim())
+      .map((l) => ({
+        id: l.id,
+        nom: l.nom.trim(),
+        prix: Number.isFinite(parseFloat(l.prix)) ? Math.round(parseFloat(l.prix) * 100) / 100 : 0,
+        categorie: CATEGORIES_TICKET.includes(l.categorie) ? l.categorie : CATEGORIES_TICKET[CATEGORIES_TICKET.length - 1],
+        date: dateEntree,
+      }));
+    if (nouvelles.length === 0) return;
+    const nextDepenses = { ...depenses, [moisCle]: [...(depenses[moisCle] || []), ...nouvelles] };
+    setDepenses(nextDepenses);
+    await persistState({ depenses: nextDepenses });
+    annulerTicket();
+  };
+
+  const essayerTicketViaClaude = () => {
+    setTicketFallbackPrompt(construirePromptTicket());
+    setTicketFallbackAnswer("");
+    setTicketFallbackError(null);
+  };
+
+  const copierPromptTicketSecours = async () => {
+    try {
+      await navigator.clipboard.writeText(ticketFallbackPrompt || "");
+      setTicketFallbackCopied(true);
+      setTimeout(() => setTicketFallbackCopied(false), 2000);
+    } catch (e) {
+      // best effort
+    }
+  };
+
+  const validerReponseTicketSecours = () => {
+    const match = ticketFallbackAnswer.match(/\{[\s\S]*\}/);
+    let parsed = null;
+    if (match) {
+      try {
+        parsed = JSON.parse(match[0]);
+      } catch (e) {
+        parsed = null;
+      }
+    }
+    const extrait = parsed ? extraireLignesTicket(parsed) : null;
+    if (!extrait) {
+      setTicketFallbackError("Le texte collé n'est pas un JSON valide, réessaie en collant toute la réponse de Claude.");
+      return;
+    }
+    setTicketFallbackError(null);
+    setTicketError(null);
+    setTicketLignes(extrait.lignes);
+    setTicketDate(extrait.date);
+    setTicketMagasin(extrait.magasin);
+    setTicketFallbackPrompt(null);
+    setTicketFallbackAnswer("");
+  };
+
+  const toggleMoisDeplie = (cle) => {
+    setMoisDeplies((prev) => ({ ...prev, [cle]: !prev[cle] }));
   };
 
   const toggleItem = async (key) => {
@@ -2050,6 +2265,418 @@ ${exempleSemaine}
                 </button>
               </div>
             ))
+          )}
+        </div>
+      )}
+
+      {activeTab === "budget" && (
+        <div>
+          <input
+            ref={ticketInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            onChange={handleTicketFileChange}
+            style={{ display: "none" }}
+          />
+
+          <div
+            style={{
+              background: "#26362C",
+              border: "1px solid #2E3F33",
+              borderRadius: 10,
+              padding: 14,
+              marginBottom: 18,
+            }}
+          >
+            <div style={{ fontSize: 12, color: "#9CAB9C", marginBottom: 4 }}>
+              Budget alimentaire — {moisCleVersLabel(moisCourant)}
+            </div>
+            <div className="carnet-title" style={{ fontSize: 22, fontWeight: 600, color: "#D9A441", marginBottom: depensesMoisCourant.length > 0 ? 10 : 0 }}>
+              {formatEuro(totalMoisCourant)}
+            </div>
+            {depensesMoisCourant.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {repartitionParCategorie(depensesMoisCourant).map((r) => (
+                  <div key={r.categorie} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: "#9CAB9C" }}>
+                    <span>{r.categorie}</span>
+                    <span>
+                      {formatEuro(r.montant)} <span style={{ color: "#7C8C7E" }}>· {r.pct}%</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {ticketLignes === null && (
+            <button
+              onClick={demarrerScanTicket}
+              disabled={ticketLoading}
+              style={{
+                width: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                background: ticketLoading ? "#3C4E40" : "#D9A441",
+                color: ticketLoading ? "#9CAB9C" : "#1E2A22",
+                border: "none",
+                borderRadius: 10,
+                padding: "13px 16px",
+                fontSize: 15,
+                fontWeight: 600,
+                cursor: ticketLoading ? "default" : "pointer",
+                marginBottom: 14,
+              }}
+            >
+              {ticketLoading ? (
+                <>
+                  <Loader2 size={16} className="spin" /> Analyse du ticket...
+                </>
+              ) : (
+                <>
+                  <Camera size={16} /> Scanner un ticket
+                </>
+              )}
+            </button>
+          )}
+
+          {ticketError && (
+            <div style={{ marginBottom: 10, fontSize: 13, color: "#C77B5F" }}>{ticketError}</div>
+          )}
+
+          {ticketError && !ticketFallbackPrompt && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 18 }}>
+              <button
+                onClick={essayerTicketViaClaude}
+                style={{
+                  width: "100%",
+                  background: "transparent",
+                  border: "1px solid #D9A441",
+                  borderRadius: 10,
+                  padding: "12px 14px",
+                  color: "#D9A441",
+                  fontSize: 14,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Scanner via Claude à la place
+              </button>
+              <button
+                onClick={ouvrirSaisieManuelleTicket}
+                style={{
+                  width: "100%",
+                  background: "transparent",
+                  border: "1px solid #3C4E40",
+                  borderRadius: 10,
+                  padding: "12px 14px",
+                  color: "#9CAB9C",
+                  fontSize: 13,
+                  cursor: "pointer",
+                }}
+              >
+                Saisir les articles manuellement
+              </button>
+            </div>
+          )}
+
+          {ticketFallbackPrompt && (
+            <div
+              style={{
+                marginBottom: 18,
+                background: "#26362C",
+                border: "1px solid #2E3F33",
+                borderRadius: 10,
+                padding: 14,
+              }}
+            >
+              <div style={{ fontSize: 12, color: "#9CAB9C", marginBottom: 10, lineHeight: 1.6 }}>
+                1. Copie ce texte
+                <br />
+                2. Ouvre l'appli Claude sur ton téléphone
+                <br />
+                3. Envoie-lui la photo de ton ticket ET colle ce texte dans le même message
+                <br />
+                4. Copie sa réponse en entier
+                <br />
+                5. Reviens ici et colle-la ci-dessous
+              </div>
+
+              <textarea
+                readOnly
+                value={ticketFallbackPrompt}
+                style={{
+                  width: "100%",
+                  minHeight: 140,
+                  background: "#1E2A22",
+                  border: "1px solid #3C4E40",
+                  borderRadius: 8,
+                  padding: 10,
+                  color: "#F1EDE2",
+                  fontSize: 16,
+                  boxSizing: "border-box",
+                  resize: "vertical",
+                  fontFamily: "inherit",
+                }}
+              />
+              <button
+                onClick={copierPromptTicketSecours}
+                style={{
+                  marginTop: 8,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                  background: "transparent",
+                  border: "1px solid #3C4E40",
+                  borderRadius: 7,
+                  padding: "10px 14px",
+                  color: ticketFallbackCopied ? "#D9A441" : "#9CAB9C",
+                  fontSize: 12.5,
+                  cursor: "pointer",
+                }}
+              >
+                {ticketFallbackCopied ? <ClipboardCheck size={13} /> : <Copy size={13} />}
+                {ticketFallbackCopied ? "Copié" : "Copier le prompt"}
+              </button>
+
+              <div style={{ marginTop: 16, marginBottom: 6, fontSize: 13, color: "#9CAB9C" }}>
+                Réponse de Claude
+              </div>
+              <textarea
+                value={ticketFallbackAnswer}
+                onChange={(e) => setTicketFallbackAnswer(e.target.value)}
+                placeholder="Colle ici la réponse de Claude"
+                style={{
+                  width: "100%",
+                  minHeight: 140,
+                  background: "#1E2A22",
+                  border: "1px solid #3C4E40",
+                  borderRadius: 8,
+                  padding: 10,
+                  color: "#F1EDE2",
+                  fontSize: 16,
+                  boxSizing: "border-box",
+                  resize: "vertical",
+                  fontFamily: "inherit",
+                }}
+              />
+
+              {ticketFallbackError && (
+                <div style={{ marginTop: 8, fontSize: 13, color: "#C77B5F" }}>{ticketFallbackError}</div>
+              )}
+
+              <button
+                onClick={validerReponseTicketSecours}
+                disabled={!ticketFallbackAnswer.trim()}
+                style={{
+                  marginTop: 10,
+                  width: "100%",
+                  background: ticketFallbackAnswer.trim() ? "#D9A441" : "#3C4E40",
+                  color: ticketFallbackAnswer.trim() ? "#1E2A22" : "#9CAB9C",
+                  border: "none",
+                  borderRadius: 10,
+                  padding: "13px 16px",
+                  fontSize: 15,
+                  fontWeight: 600,
+                  cursor: ticketFallbackAnswer.trim() ? "pointer" : "default",
+                }}
+              >
+                Valider cette réponse
+              </button>
+            </div>
+          )}
+
+          {ticketLignes !== null && (
+            <div style={{ marginBottom: 20 }}>
+              <div className="carnet-title" style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>
+                Vérifie et corrige avant d'enregistrer
+              </div>
+              {(ticketDate || ticketMagasin) && (
+                <div style={{ fontSize: 11.5, color: "#7C8C7E", marginBottom: 10 }}>
+                  {[ticketMagasin, ticketDate].filter(Boolean).join(" · ")}
+                </div>
+              )}
+
+              {ticketLignes.length === 0 && (
+                <div style={{ fontSize: 13, color: "#9CAB9C", padding: "14px 0" }}>
+                  Aucune ligne pour l'instant — ajoute-en une ci-dessous.
+                </div>
+              )}
+
+              {ticketLignes.map((ligne) => (
+                <div
+                  key={ligne.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "8px 0",
+                    borderBottom: "1px solid #2E3F33",
+                  }}
+                >
+                  <input
+                    value={ligne.nom}
+                    onChange={(e) => modifierLigneTicket(ligne.id, "nom", e.target.value)}
+                    placeholder="Nom du produit"
+                    style={{ ...baseInputStyle, flex: 2, fontSize: 13.5, padding: "8px 10px" }}
+                  />
+                  <input
+                    value={ligne.prix}
+                    onChange={(e) => modifierLigneTicket(ligne.id, "prix", e.target.value)}
+                    placeholder="Prix"
+                    inputMode="decimal"
+                    style={{ ...baseInputStyle, flex: 1, fontSize: 13.5, padding: "8px 10px", minWidth: 0 }}
+                  />
+                  <select
+                    value={ligne.categorie}
+                    onChange={(e) => modifierLigneTicket(ligne.id, "categorie", e.target.value)}
+                    style={{ ...baseInputStyle, flex: 1.6, fontSize: 12.5, padding: "8px 6px" }}
+                  >
+                    {CATEGORIES_TICKET.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => supprimerLigneTicket(ligne.id)}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: "#5A6E5E",
+                      cursor: "pointer",
+                      padding: 6,
+                      flexShrink: 0,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
+
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+                <button
+                  onClick={ajouterLigneTicketVide}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                    background: "transparent",
+                    border: "1px dashed #3C4E40",
+                    borderRadius: 8,
+                    padding: "9px 12px",
+                    color: "#9CAB9C",
+                    fontSize: 12.5,
+                    cursor: "pointer",
+                  }}
+                >
+                  <Plus size={13} /> Ajouter une ligne
+                </button>
+                <div style={{ fontSize: 13, color: "#9CAB9C" }}>
+                  Total : <span style={{ color: "#D9A441", fontWeight: 600 }}>{formatEuro(ticketLignes.reduce((s, l) => s + (parseFloat(l.prix) || 0), 0))}</span>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+                <button
+                  onClick={annulerTicket}
+                  style={{
+                    flex: 1,
+                    background: "transparent",
+                    border: "1px solid #3C4E40",
+                    borderRadius: 10,
+                    padding: "12px 14px",
+                    color: "#9CAB9C",
+                    fontSize: 14,
+                    cursor: "pointer",
+                  }}
+                >
+                  Annuler
+                </button>
+                <button
+                  onClick={validerLignesTicket}
+                  disabled={ticketLignes.filter((l) => l.nom.trim()).length === 0}
+                  style={{
+                    flex: 2,
+                    background: ticketLignes.filter((l) => l.nom.trim()).length > 0 ? "#D9A441" : "#3C4E40",
+                    color: ticketLignes.filter((l) => l.nom.trim()).length > 0 ? "#1E2A22" : "#9CAB9C",
+                    border: "none",
+                    borderRadius: 10,
+                    padding: "12px 14px",
+                    fontSize: 14,
+                    fontWeight: 600,
+                    cursor: ticketLignes.filter((l) => l.nom.trim()).length > 0 ? "pointer" : "default",
+                  }}
+                >
+                  Valider
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="carnet-title" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>
+            Mois précédents
+          </div>
+          {Object.keys(depenses)
+            .filter((cle) => cle !== moisCourant)
+            .sort()
+            .reverse().length === 0 ? (
+            <div style={{ fontSize: 13, color: "#9CAB9C", textAlign: "center", padding: "20px 10px" }}>
+              Aucun mois précédent pour l'instant.
+            </div>
+          ) : (
+            Object.keys(depenses)
+              .filter((cle) => cle !== moisCourant)
+              .sort()
+              .reverse()
+              .map((cle) => {
+                const lignesMois = depenses[cle] || [];
+                const totalMois = lignesMois.reduce((s, l) => s + (l.prix || 0), 0);
+                const deplie = !!moisDeplies[cle];
+                return (
+                  <div key={cle} style={{ marginBottom: 8, border: "1px solid #2E3F33", borderRadius: 10, overflow: "hidden" }}>
+                    <button
+                      onClick={() => toggleMoisDeplie(cle)}
+                      style={{
+                        width: "100%",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        padding: "12px 14px",
+                        background: "#26362C",
+                        border: "none",
+                        color: "#F1EDE2",
+                        fontSize: 14,
+                        cursor: "pointer",
+                        textAlign: "left",
+                      }}
+                    >
+                      <span style={{ textTransform: "capitalize" }}>{moisCleVersLabel(cle)}</span>
+                      <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ color: "#D9A441", fontWeight: 600 }}>{formatEuro(totalMois)}</span>
+                        {deplie ? <ChevronUp size={14} color="#9CAB9C" /> : <ChevronDown size={14} color="#9CAB9C" />}
+                      </span>
+                    </button>
+                    {deplie && (
+                      <div style={{ padding: "10px 14px 14px", display: "flex", flexDirection: "column", gap: 4 }}>
+                        {repartitionParCategorie(lignesMois).map((r) => (
+                          <div key={r.categorie} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: "#9CAB9C" }}>
+                            <span>{r.categorie}</span>
+                            <span>
+                              {formatEuro(r.montant)} <span style={{ color: "#7C8C7E" }}>· {r.pct}%</span>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
           )}
         </div>
       )}

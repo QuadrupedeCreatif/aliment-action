@@ -22,12 +22,19 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function callGemini(model, prompt, apiKey) {
+// `image` optionnel : { mimeType: "image/jpeg"|"image/png", data: "<base64>" }.
+// Les modèles Flash sont multimodaux nativement, donc GEMINI_MODEL sert aussi
+// pour la vision — pas besoin d'un GEMINI_MODEL_VISION séparé.
+function callGemini(model, prompt, apiKey, image) {
+  const parts = [{ text: prompt }];
+  if (image) {
+    parts.push({ inline_data: { mime_type: image.mimeType, data: image.data } });
+  }
   return fetch(`${GEMINI_URL}/${model}:generateContent?key=${apiKey}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
+      contents: [{ parts }],
     }),
   });
 }
@@ -45,10 +52,11 @@ export default {
       });
     }
 
-    let prompt;
+    let prompt, image;
     try {
       const body = await request.json();
       prompt = body.prompt;
+      image = body.image;
     } catch (e) {
       return new Response(JSON.stringify({ error: "Corps JSON invalide" }), {
         status: 400,
@@ -63,6 +71,17 @@ export default {
       });
     }
 
+    if (image !== undefined) {
+      const mimeOk = image && (image.mimeType === "image/jpeg" || image.mimeType === "image/png");
+      const dataOk = image && typeof image.data === "string" && image.data.length > 0;
+      if (!mimeOk || !dataOk) {
+        return new Response(
+          JSON.stringify({ error: "Le champ 'image' doit être { mimeType: 'image/jpeg'|'image/png', data: '<base64>' }" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    }
+
     if (!env.GEMINI_API_KEY) {
       return new Response(JSON.stringify({ error: "GEMINI_API_KEY non configurée sur le Worker" }), {
         status: 500,
@@ -70,18 +89,18 @@ export default {
       });
     }
 
-    let geminiResponse = await callGemini(GEMINI_MODEL, prompt, env.GEMINI_API_KEY);
+    let geminiResponse = await callGemini(GEMINI_MODEL, prompt, env.GEMINI_API_KEY, image);
 
     // Retry sur 503 (Gemini en forte demande) : jusqu'à 2 tentatives
     // supplémentaires sur le modèle principal, avec un court délai entre elles.
     for (let i = 0; geminiResponse.status === 503 && i < RETRY_DELAYS_MS.length; i++) {
       await sleep(RETRY_DELAYS_MS[i]);
-      geminiResponse = await callGemini(GEMINI_MODEL, prompt, env.GEMINI_API_KEY);
+      geminiResponse = await callGemini(GEMINI_MODEL, prompt, env.GEMINI_API_KEY, image);
     }
 
     // Toujours 503 après les retries : dernière tentative sur un modèle de repli.
     if (geminiResponse.status === 503) {
-      geminiResponse = await callGemini(GEMINI_MODEL_FALLBACK, prompt, env.GEMINI_API_KEY);
+      geminiResponse = await callGemini(GEMINI_MODEL_FALLBACK, prompt, env.GEMINI_API_KEY, image);
     }
 
     if (!geminiResponse.ok) {
