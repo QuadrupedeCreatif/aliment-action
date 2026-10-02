@@ -16,6 +16,9 @@ import {
   Settings,
   UtensilsCrossed,
   History,
+  NotebookPen,
+  ChevronLeft,
+  Search,
 } from "lucide-react";
 import {
   MEALS_CONFIGS,
@@ -26,6 +29,7 @@ import {
   construireLigneFoyer,
   formatFoodTableForPrompt,
   personneEstComplete,
+  rechercherAliment,
 } from "./nutrition-data.js";
 
 // Colle ici l'URL publique de ton Worker Cloudflare une fois déployé
@@ -58,6 +62,7 @@ const TABS = [
   { id: "reglages", label: "Réglages", Icon: Settings },
   { id: "menus", label: "Menus", Icon: UtensilsCrossed },
   { id: "courses", label: "Courses", Icon: ShoppingBasket },
+  { id: "journal", label: "Journal", Icon: NotebookPen },
   { id: "historique", label: "Historique", Icon: History },
 ];
 
@@ -103,6 +108,34 @@ function crudifie(texte) {
   // filet générique : au cas où "cuit(e)(s)" traîne ailleurs sans conversion possible
   t = t.replace(/\s+cuite?s?\b/gi, "").replace(/\s{2,}/g, " ").trim();
   return t;
+}
+
+// Dates du journal en "YYYY-MM-DD" local (pas toISOString, qui bascule en UTC
+// et peut décaler le jour près de minuit).
+function dateVersISO(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const j = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${j}`;
+}
+
+function ajourdhuiISO() {
+  return dateVersISO(new Date());
+}
+
+function decalerJourISO(iso, delta) {
+  const [y, m, j] = iso.split("-").map(Number);
+  const d = new Date(y, m - 1, j);
+  d.setDate(d.getDate() + delta);
+  return dateVersISO(d);
+}
+
+function formatJournalDate(iso) {
+  const aujourdhui = ajourdhuiISO();
+  if (iso === aujourdhui) return "Aujourd'hui";
+  if (iso === decalerJourISO(aujourdhui, -1)) return "Hier";
+  const [y, m, j] = iso.split("-").map(Number);
+  return new Date(y, m - 1, j).toLocaleDateString("fr-FR", { day: "numeric", month: "long" });
 }
 
 function getISOWeek(date) {
@@ -319,6 +352,17 @@ export default function CarnetDeCourses() {
   const [fallbackCopied, setFallbackCopied] = useState(false);
   const [jourActifIndex, setJourActifIndex] = useState(0);
   const [carouselHeight, setCarouselHeight] = useState(null);
+  const [journal, setJournal] = useState({});
+  const [journalDate, setJournalDate] = useState(ajourdhuiISO());
+  const [journalQuery, setJournalQuery] = useState("");
+  const [journalPicked, setJournalPicked] = useState(null);
+  const [journalGrammes, setJournalGrammes] = useState("");
+  const [journalManuel, setJournalManuel] = useState(false);
+  const [journalManuelNom, setJournalManuelNom] = useState("");
+  const [journalManuelQuantite, setJournalManuelQuantite] = useState("");
+  const [journalManuelKcal, setJournalManuelKcal] = useState("");
+  const [journalManuelProt, setJournalManuelProt] = useState("");
+  const [journalManuelFibres, setJournalManuelFibres] = useState("");
   const carouselRef = useRef(null);
   const carteRefs = useRef([]);
   const scrollDebounceRef = useRef(null);
@@ -340,6 +384,7 @@ export default function CarnetDeCourses() {
         setGeneratedAt(saved.generatedAt || null);
         setContexteUtilise(saved.contexteUtilise || null);
         setHistorique(saved.historique || []);
+        setJournal(saved.journal || {});
         setRepasFixes(saved.repasFixes || {});
         setRepasParJour(saved.repasParJour || DEFAULT_REPAS_PAR_JOUR);
         setBudget(saved.budget || "normal");
@@ -430,7 +475,7 @@ export default function CarnetDeCourses() {
       cuisineTrim ? `\n- Type de cuisine souhaité : ${cuisineTrim}` : ""
     }${exclusionsTrim ? `\n- À éviter absolument (allergies/préférences) : ${exclusionsTrim}` : ""}${
       semainePrecedente ? `\n- Repas de la semaine précédente, à varier (évite de répéter les mêmes associations) : ${semainePrecedente}` : ""
-    }\n- Table de référence nutritionnelle (kcal/protéines pour 100g, aliments courants — appuie-toi dessus pour tes choix) : ${formatFoodTableForPrompt()}`;
+    }\n- Table de référence nutritionnelle (kcal/protéines/fibres pour 100g, aliments courants — appuie-toi dessus pour tes choix) : ${formatFoodTableForPrompt()}`;
 
     return { goal, meals, contexte };
   };
@@ -439,7 +484,7 @@ export default function CarnetDeCourses() {
   // — utilisé à la fois pour la réponse Gemini et pour la réponse collée manuellement.
   const nettoyerSemaine = (semaineBrute, meals) =>
     semaineBrute.map((j) => {
-      const jour = { jour: j.jour, kcal: j.kcal, prot: j.prot };
+      const jour = { jour: j.jour, kcal: j.kcal, prot: j.prot, fibres: j.fibres };
       for (const m of meals) {
         jour[m.key] = repasFixes[m.key] || crudifie(j[m.key]);
       }
@@ -463,7 +508,7 @@ export default function CarnetDeCourses() {
       localisation: pays.trim() || "France",
       objectif: goalLabel,
       repasParJour,
-      cibleFoyer: { kcal: cibleFoyer.kcal, prot: cibleFoyer.prot, nbPersonnes: cibleFoyer.nbPersonnes },
+      cibleFoyer: { kcal: cibleFoyer.kcal, prot: cibleFoyer.prot, fibres: cibleFoyer.fibres, nbPersonnes: cibleFoyer.nbPersonnes },
     };
 
     // Historique : on range l'ancienne semaine actuelle avant de la remplacer (max 4 conservées)
@@ -511,7 +556,7 @@ export default function CarnetDeCourses() {
       const menusPromptPour = (joursSubset) => {
         const champsExemple = meals.map((m) => `"${m.key}": "..."`).join(", ");
         const exemple = joursSubset
-          .map((j) => `  {"jour": "${j}", ${champsExemple}, "kcal": 2200, "prot": 140}`)
+          .map((j) => `  {"jour": "${j}", ${champsExemple}, "kcal": 2200, "prot": 140, "fibres": 32}`)
           .join(",\n");
         const listeRepasTexte = meals.map((m) => m.label.toLowerCase()).join(", ");
         return `Tu es un nutritionniste pragmatique qui aide un foyer à composer ses repas de la semaine.
@@ -519,7 +564,7 @@ export default function CarnetDeCourses() {
 Contexte :
 ${contexte}
 
-Consigne stricte : ne donne AUCUNE recette, juste pour chaque repas (${listeRepasTexte}) une courte association d'aliments AVEC quantités précises AU NIVEAU DU FOYER (une seule quantité lisible par aliment pour tout le foyer, pas de détail par personne dans le texte), en priorisant les légumes/fruits de saison listés ci-dessus, la table de référence nutritionnelle, et en respectant les aliments à éviter le cas échéant. TOUTES les quantités sont en poids CRU, tel qu'acheté et pesé avant cuisson — n'écris JAMAIS le mot "cuit(es)" ni un poids cuit. C'est particulièrement important pour le riz et les pâtes, qui doublent de poids à la cuisson : utilise leur poids sec (ex: "80g riz cru", "90g pâtes crues"), jamais "180g riz cuit" ou "200g pâtes cuites". Format quantité : grammes pour le solide (ex: "100g flocons d'avoine"), cl pour le liquide (ex: "20cl lait entier"), pièces pour les fruits/légumes entiers (ex: "2 bananes"), cuillères pour les condiments. Exemple complet : "100g flocons d'avoine + 20cl lait entier + 2 bananes". Reste concis, 3 aliments max par repas. Ajoute aussi pour chaque jour une estimation approximative du total kcal ("kcal", nombre entier) et des protéines en grammes ("prot", nombre entier) sur l'ensemble de la journée, pour le foyer entier. Génère UNIQUEMENT les jours suivants : ${joursSubset.join(", ")}.
+Consigne stricte : ne donne AUCUNE recette, juste pour chaque repas (${listeRepasTexte}) une courte association d'aliments AVEC quantités précises AU NIVEAU DU FOYER (une seule quantité lisible par aliment pour tout le foyer, pas de détail par personne dans le texte), en priorisant les légumes/fruits de saison listés ci-dessus, la table de référence nutritionnelle, et en respectant les aliments à éviter le cas échéant. Privilégie des aliments bruts ou peu transformés ; évite toute suggestion s'approchant d'un produit ultra-transformé (plats préparés, charcuterie industrielle, snacks sucrés/salés), sauf pour l'épicerie de base (huile, condiments). Diversifie les sources de protéines sur la semaine : alterne viande, poisson, œufs, légumineuses/tofu plutôt que de répéter la même source matin/midi/soir sur plusieurs jours. TOUTES les quantités sont en poids CRU, tel qu'acheté et pesé avant cuisson — n'écris JAMAIS le mot "cuit(es)" ni un poids cuit. C'est particulièrement important pour le riz et les pâtes, qui doublent de poids à la cuisson : utilise leur poids sec (ex: "80g riz cru", "90g pâtes crues"), jamais "180g riz cuit" ou "200g pâtes cuites". Format quantité : grammes pour le solide (ex: "100g flocons d'avoine"), cl pour le liquide (ex: "20cl lait entier"), pièces pour les fruits/légumes entiers (ex: "2 bananes"), cuillères pour les condiments. Exemple complet : "100g flocons d'avoine + 20cl lait entier + 2 bananes". Reste concis, 3 aliments max par repas. Ajoute aussi pour chaque jour une estimation approximative du total kcal ("kcal", nombre entier), des protéines en grammes ("prot", nombre entier) et des fibres en grammes ("fibres", nombre entier, estimé à partir de la table de référence) sur l'ensemble de la journée, pour le foyer entier. Génère UNIQUEMENT les jours suivants : ${joursSubset.join(", ")}.
 
 Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase avant ou après :
 {"semaine": [
@@ -597,7 +642,7 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
     const joursListe = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"];
     const champsExemple = meals.map((m) => `"${m.key}": "..."`).join(", ");
     const exempleSemaine = joursListe
-      .map((j) => `    {"jour": "${j}", ${champsExemple}, "kcal": 2200, "prot": 140}`)
+      .map((j) => `    {"jour": "${j}", ${champsExemple}, "kcal": 2200, "prot": 140, "fibres": 32}`)
       .join(",\n");
     const listeRepasTexte = meals.map((m) => m.label.toLowerCase()).join(", ");
 
@@ -606,7 +651,7 @@ Réponds UNIQUEMENT avec ce JSON, rien d'autre, pas de \`\`\`, pas de phrase ava
 Contexte :
 ${contexte}
 
-Étape 1 — Menus : pour chaque jour de la semaine (Lundi à Dimanche) et chaque repas (${listeRepasTexte}), donne une courte association d'aliments AVEC quantités précises AU NIVEAU DU FOYER (une seule quantité lisible par aliment pour tout le foyer, pas de détail par personne dans le texte), en priorisant les légumes/fruits de saison, la table de référence nutritionnelle, et en respectant les aliments à éviter le cas échéant. TOUTES les quantités sont en poids CRU, tel qu'acheté et pesé avant cuisson — n'écris JAMAIS le mot "cuit(es)" ni un poids cuit (particulièrement important pour le riz et les pâtes, qui doublent de poids à la cuisson : utilise leur poids sec, ex "80g riz cru", "90g pâtes crues"). Format quantité : grammes pour le solide, cl pour le liquide, pièces pour les fruits/légumes entiers, cuillères pour les condiments. Reste concis, 3 aliments max par repas. Ajoute pour chaque jour une estimation kcal et prot (nombres entiers) pour le foyer entier.
+Étape 1 — Menus : pour chaque jour de la semaine (Lundi à Dimanche) et chaque repas (${listeRepasTexte}), donne une courte association d'aliments AVEC quantités précises AU NIVEAU DU FOYER (une seule quantité lisible par aliment pour tout le foyer, pas de détail par personne dans le texte), en priorisant les légumes/fruits de saison, la table de référence nutritionnelle, et en respectant les aliments à éviter le cas échéant. Privilégie des aliments bruts ou peu transformés ; évite toute suggestion s'approchant d'un produit ultra-transformé (plats préparés, charcuterie industrielle, snacks sucrés/salés), sauf pour l'épicerie de base (huile, condiments). Diversifie les sources de protéines sur la semaine : alterne viande, poisson, œufs, légumineuses/tofu plutôt que de répéter la même source matin/midi/soir sur plusieurs jours. TOUTES les quantités sont en poids CRU, tel qu'acheté et pesé avant cuisson — n'écris JAMAIS le mot "cuit(es)" ni un poids cuit (particulièrement important pour le riz et les pâtes, qui doublent de poids à la cuisson : utilise leur poids sec, ex "80g riz cru", "90g pâtes crues"). Format quantité : grammes pour le solide, cl pour le liquide, pièces pour les fruits/légumes entiers, cuillères pour les condiments. Reste concis, 3 aliments max par repas. Ajoute pour chaque jour une estimation kcal, prot et fibres (nombres entiers, fibres estimée à partir de la table de référence) pour le foyer entier.
 
 Étape 2 — Liste de courses : à partir de ces mêmes menus, construis la liste de courses cumulée pour les 7 jours et pour TOUT LE FOYER (pas une seule personne), en tenant compte du nombre de personnes et de leurs besoins caloriques respectifs indiqués ci-dessus. Additionne les quantités, évite les doublons. TOUJOURS en poids CRU, jamais "cuit(es)". Maximum 5 catégories, maximum 6 articles par catégorie. Chaque article est une seule chaîne courte "nom + quantité totale" (ex: "Poulet 600g", "Riz basmati 1kg", "Brocolis 2 têtes").
 
@@ -679,11 +724,80 @@ ${exempleSemaine}
         generatedAt,
         contexteUtilise,
         historique,
+        journal,
         ...overrides,
       });
     },
-    [persist, goalId, pays, exclusions, personnes, repasParJour, budget, cuisine, repasFixes, data, checked, generatedAt, contexteUtilise, historique]
+    [persist, goalId, pays, exclusions, personnes, repasParJour, budget, cuisine, repasFixes, data, checked, generatedAt, contexteUtilise, historique, journal]
   );
+
+  const journalSuggestions = journalQuery.trim() && !journalPicked ? rechercherAliment(journalQuery) : [];
+  const journalEntreesJour = journal[journalDate] || [];
+  const journalTotaux = journalEntreesJour.reduce(
+    (acc, e) => ({ kcal: acc.kcal + (e.kcal || 0), prot: acc.prot + (e.prot || 0), fibres: acc.fibres + (e.fibres || 0) }),
+    { kcal: 0, prot: 0, fibres: 0 }
+  );
+
+  const choisirAlimentJournal = (aliment) => {
+    setJournalPicked(aliment);
+    setJournalQuery(aliment.nom);
+  };
+
+  const ajouterEntreeJournal = async () => {
+    const g = parseFloat(journalGrammes);
+    if (!journalPicked || !Number.isFinite(g) || g <= 0) return;
+    const ratio = g / 100;
+    const entree = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      nom: journalPicked.nom,
+      quantite: `${g}g`,
+      kcal: Math.round(journalPicked.kcal * ratio),
+      prot: Math.round(journalPicked.prot * ratio),
+      fibres: Math.round(journalPicked.fibres * ratio),
+    };
+    const nextJournal = { ...journal, [journalDate]: [...journalEntreesJour, entree] };
+    setJournal(nextJournal);
+    await persistState({ journal: nextJournal });
+    setJournalQuery("");
+    setJournalPicked(null);
+    setJournalGrammes("");
+  };
+
+  const ajouterEntreeManuelleJournal = async () => {
+    const nom = journalManuelNom.trim();
+    const kcal = parseInt(journalManuelKcal, 10);
+    if (!nom || !Number.isFinite(kcal)) return;
+    const entree = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      nom,
+      quantite: journalManuelQuantite.trim() || "—",
+      kcal,
+      prot: parseInt(journalManuelProt, 10) || 0,
+      fibres: parseInt(journalManuelFibres, 10) || 0,
+    };
+    const nextJournal = { ...journal, [journalDate]: [...journalEntreesJour, entree] };
+    setJournal(nextJournal);
+    await persistState({ journal: nextJournal });
+    setJournalManuelNom("");
+    setJournalManuelQuantite("");
+    setJournalManuelKcal("");
+    setJournalManuelProt("");
+    setJournalManuelFibres("");
+    setJournalManuel(false);
+  };
+
+  const supprimerEntreeJournal = async (id) => {
+    const nextEntrees = journalEntreesJour.filter((e) => e.id !== id);
+    const nextJournal = { ...journal, [journalDate]: nextEntrees };
+    setJournal(nextJournal);
+    await persistState({ journal: nextJournal });
+  };
+
+  const changerJourJournal = (delta) => {
+    const next = decalerJourISO(journalDate, delta);
+    if (next > ajourdhuiISO()) return; // jamais dans le futur
+    setJournalDate(next);
+  };
 
   const toggleItem = async (key) => {
     if (viewIndex !== null) return; // lecture seule sur l'historique
@@ -809,8 +923,11 @@ ${exempleSemaine}
     if (jours.length === 0) return null;
     const moyenneKcal = Math.round(jours.reduce((s, j) => s + j.kcal, 0) / jours.length);
     const moyenneProt = Math.round(jours.reduce((s, j) => s + j.prot, 0) / jours.length);
+    const joursAvecFibres = jours.filter((j) => Number.isFinite(j.fibres));
+    const moyenneFibres =
+      joursAvecFibres.length > 0 ? Math.round(joursAvecFibres.reduce((s, j) => s + j.fibres, 0) / joursAvecFibres.length) : null;
     const cible = activeEntry.contexteUtilise?.cibleFoyer || null;
-    return { moyenneKcal, moyenneProt, cible };
+    return { moyenneKcal, moyenneProt, moyenneFibres, cible };
   }, [activeEntry.data, activeEntry.contexteUtilise]);
 
   const copierListe = async () => {
@@ -969,7 +1086,8 @@ ${exempleSemaine}
         {cibleFoyer.parPersonne.length > 0 && (
           <div style={{ fontSize: 12, color: "#9CAB9C", marginTop: 10 }}>
             Cible foyer : <span style={{ color: "#D9A441" }}>≈{cibleFoyer.kcal} kcal</span> ·{" "}
-            <span style={{ color: "#D9A441" }}>{cibleFoyer.prot}g protéines</span> / jour
+            <span style={{ color: "#D9A441" }}>{cibleFoyer.prot}g protéines</span> ·{" "}
+            <span style={{ color: "#D9A441" }}>{cibleFoyer.fibres}g fibres</span> / jour
             {cibleFoyer.incompletes > 0
               ? ` (${cibleFoyer.incompletes} profil${cibleFoyer.incompletes > 1 ? "s" : ""} incomplet${cibleFoyer.incompletes > 1 ? "s" : ""} exclu${cibleFoyer.incompletes > 1 ? "s" : ""} du calcul)`
               : ""}
@@ -1253,8 +1371,18 @@ ${exempleSemaine}
                 <div style={{ fontSize: 12, color: "#9CAB9C", marginBottom: 14 }}>
                   Moyenne semaine : <span style={{ color: "#D9A441" }}>≈{resumeNutritionnel.moyenneKcal} kcal/jour</span> ·{" "}
                   <span style={{ color: "#D9A441" }}>{resumeNutritionnel.moyenneProt}g protéines</span>
+                  {resumeNutritionnel.moyenneFibres != null ? (
+                    <>
+                      {" "}
+                      · <span style={{ color: "#D9A441" }}>{resumeNutritionnel.moyenneFibres}g fibres</span>
+                    </>
+                  ) : (
+                    ""
+                  )}
                   {resumeNutritionnel.cible
-                    ? ` — cible foyer : ${resumeNutritionnel.cible.kcal} kcal · ${resumeNutritionnel.cible.prot}g`
+                    ? ` — cible foyer : ${resumeNutritionnel.cible.kcal} kcal · ${resumeNutritionnel.cible.prot}g${
+                        resumeNutritionnel.cible.fibres != null ? ` · ${resumeNutritionnel.cible.fibres}g fibres` : ""
+                      }`
                     : ""}
                 </div>
               )}
@@ -1364,11 +1492,13 @@ ${exempleSemaine}
                           </div>
                         );
                       })}
-                      {(jour.kcal || jour.prot) && (
+                      {(jour.kcal || jour.prot || jour.fibres) && (
                         <div style={{ fontSize: 12, color: "#7C8C7E", marginTop: 6, paddingTop: 10, borderTop: "1px solid #2E3F33" }}>
                           {jour.kcal ? `≈${jour.kcal} kcal` : ""}
                           {jour.kcal && jour.prot ? " · " : ""}
                           {jour.prot ? `${jour.prot}g prot` : ""}
+                          {(jour.kcal || jour.prot) && jour.fibres ? " · " : ""}
+                          {jour.fibres ? `${jour.fibres}g fibres` : ""}
                         </div>
                       )}
                     </div>
@@ -1605,6 +1735,322 @@ ${exempleSemaine}
               </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {activeTab === "journal" && (
+        <div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 16, marginBottom: 16 }}>
+            <button
+              onClick={() => changerJourJournal(-1)}
+              style={{ background: "none", border: "none", color: "#9CAB9C", cursor: "pointer", padding: 8 }}
+            >
+              <ChevronLeft size={18} />
+            </button>
+            <div className="carnet-title" style={{ fontSize: 15, fontWeight: 600, minWidth: 140, textAlign: "center" }}>
+              {formatJournalDate(journalDate)}
+            </div>
+            <button
+              onClick={() => changerJourJournal(1)}
+              disabled={journalDate >= ajourdhuiISO()}
+              style={{
+                background: "none",
+                border: "none",
+                color: "#9CAB9C",
+                cursor: journalDate >= ajourdhuiISO() ? "default" : "pointer",
+                opacity: journalDate >= ajourdhuiISO() ? 0.3 : 1,
+                padding: 8,
+              }}
+            >
+              <ChevronRight size={18} />
+            </button>
+          </div>
+
+          <div
+            style={{
+              background: "#26362C",
+              border: "1px solid #2E3F33",
+              borderRadius: 10,
+              padding: 14,
+              marginBottom: 20,
+              fontSize: 13,
+              color: "#9CAB9C",
+              textAlign: "center",
+              lineHeight: 1.7,
+            }}
+          >
+            {cibleFoyer.parPersonne.length > 0 ? (
+              <>
+                {formatJournalDate(journalDate)} :{" "}
+                <span style={{ color: "#D9A441", fontWeight: 600 }}>
+                  {journalTotaux.kcal}/{cibleFoyer.kcal} kcal
+                </span>{" "}
+                ·{" "}
+                <span style={{ color: "#D9A441", fontWeight: 600 }}>
+                  {journalTotaux.prot}/{cibleFoyer.prot}g protéines
+                </span>{" "}
+                ·{" "}
+                <span style={{ color: "#D9A441", fontWeight: 600 }}>
+                  {journalTotaux.fibres}/{cibleFoyer.fibres}g fibres
+                </span>
+              </>
+            ) : (
+              <>
+                {formatJournalDate(journalDate)} :{" "}
+                <span style={{ color: "#D9A441", fontWeight: 600 }}>{journalTotaux.kcal} kcal</span> ·{" "}
+                <span style={{ color: "#D9A441", fontWeight: 600 }}>{journalTotaux.prot}g protéines</span> ·{" "}
+                <span style={{ color: "#D9A441", fontWeight: 600 }}>{journalTotaux.fibres}g fibres</span>
+                <div style={{ fontSize: 11, marginTop: 4 }}>Renseigne ton profil dans Réglages pour voir ta cible</div>
+              </>
+            )}
+          </div>
+
+          <div style={{ marginBottom: 22 }}>
+            <div className="carnet-title" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>
+              Ajouter un aliment
+            </div>
+
+            {!journalManuel ? (
+              <>
+                <div style={{ position: "relative", marginBottom: 10 }}>
+                  <div style={{ position: "relative" }}>
+                    <Search
+                      size={14}
+                      color="#7C8C7E"
+                      style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }}
+                    />
+                    <input
+                      value={journalQuery}
+                      onChange={(e) => {
+                        setJournalQuery(e.target.value);
+                        setJournalPicked(null);
+                      }}
+                      placeholder="Rechercher un aliment..."
+                      style={{ ...baseInputStyle, paddingLeft: 32 }}
+                    />
+                  </div>
+                  {journalSuggestions.length > 0 && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        top: "calc(100% + 4px)",
+                        left: 0,
+                        right: 0,
+                        background: "#2A3B2F",
+                        border: "1px solid #3C4E40",
+                        borderRadius: 8,
+                        zIndex: 10,
+                        overflow: "hidden",
+                      }}
+                    >
+                      {journalSuggestions.map((aliment) => (
+                        <button
+                          key={aliment.nom}
+                          onClick={() => choisirAlimentJournal(aliment)}
+                          style={{
+                            display: "block",
+                            width: "100%",
+                            textAlign: "left",
+                            padding: "10px 12px",
+                            background: "none",
+                            border: "none",
+                            borderBottom: "1px solid #2E3F33",
+                            color: "#F1EDE2",
+                            fontSize: 13.5,
+                            cursor: "pointer",
+                          }}
+                        >
+                          {aliment.nom}{" "}
+                          <span style={{ color: "#7C8C7E", fontSize: 11.5 }}>
+                            · {aliment.kcal}kcal/{aliment.prot}p/{aliment.fibres}fib pour 100g
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {journalPicked && (
+                  <>
+                    <div style={{ display: "flex", gap: 10, marginBottom: 6 }}>
+                      <input
+                        value={journalGrammes}
+                        onChange={(e) => setJournalGrammes(e.target.value)}
+                        placeholder="Quantité (g)"
+                        inputMode="decimal"
+                        style={{ ...baseInputStyle, flex: 1 }}
+                      />
+                      <button
+                        onClick={ajouterEntreeJournal}
+                        disabled={!(parseFloat(journalGrammes) > 0)}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 6,
+                          background: parseFloat(journalGrammes) > 0 ? "#D9A441" : "#3C4E40",
+                          color: parseFloat(journalGrammes) > 0 ? "#1E2A22" : "#9CAB9C",
+                          border: "none",
+                          borderRadius: 8,
+                          padding: "10px 16px",
+                          fontSize: 13.5,
+                          fontWeight: 600,
+                          cursor: parseFloat(journalGrammes) > 0 ? "pointer" : "default",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        <Plus size={14} /> Ajouter
+                      </button>
+                    </div>
+                    {parseFloat(journalGrammes) > 0 && (
+                      <div style={{ fontSize: 11.5, color: "#7C8C7E", marginBottom: 10 }}>
+                        ≈ {Math.round((journalPicked.kcal * parseFloat(journalGrammes)) / 100)} kcal ·{" "}
+                        {Math.round((journalPicked.prot * parseFloat(journalGrammes)) / 100)}g prot ·{" "}
+                        {Math.round((journalPicked.fibres * parseFloat(journalGrammes)) / 100)}g fibres
+                      </div>
+                    )}
+                  </>
+                )}
+
+                <button
+                  onClick={() => setJournalManuel(true)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "#9CAB9C",
+                    fontSize: 12,
+                    textDecoration: "underline",
+                    cursor: "pointer",
+                    padding: 0,
+                  }}
+                >
+                  Aliment introuvable ? Saisie manuelle
+                </button>
+              </>
+            ) : (
+              <>
+                <input
+                  value={journalManuelNom}
+                  onChange={(e) => setJournalManuelNom(e.target.value)}
+                  placeholder="Nom de l'aliment"
+                  style={{ ...baseInputStyle, marginBottom: 8 }}
+                />
+                <input
+                  value={journalManuelQuantite}
+                  onChange={(e) => setJournalManuelQuantite(e.target.value)}
+                  placeholder="Quantité (ex: 1 part, 150g...)"
+                  style={{ ...baseInputStyle, marginBottom: 8 }}
+                />
+                <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                  <input
+                    value={journalManuelKcal}
+                    onChange={(e) => setJournalManuelKcal(e.target.value)}
+                    placeholder="Kcal"
+                    inputMode="numeric"
+                    style={{ ...baseInputStyle, flex: 1 }}
+                  />
+                  <input
+                    value={journalManuelProt}
+                    onChange={(e) => setJournalManuelProt(e.target.value)}
+                    placeholder="Protéines (g)"
+                    inputMode="numeric"
+                    style={{ ...baseInputStyle, flex: 1 }}
+                  />
+                  <input
+                    value={journalManuelFibres}
+                    onChange={(e) => setJournalManuelFibres(e.target.value)}
+                    placeholder="Fibres (g)"
+                    inputMode="numeric"
+                    style={{ ...baseInputStyle, flex: 1 }}
+                  />
+                </div>
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <button
+                    onClick={ajouterEntreeManuelleJournal}
+                    disabled={!journalManuelNom.trim() || !Number.isFinite(parseInt(journalManuelKcal, 10))}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 6,
+                      background:
+                        journalManuelNom.trim() && Number.isFinite(parseInt(journalManuelKcal, 10)) ? "#D9A441" : "#3C4E40",
+                      color: journalManuelNom.trim() && Number.isFinite(parseInt(journalManuelKcal, 10)) ? "#1E2A22" : "#9CAB9C",
+                      border: "none",
+                      borderRadius: 8,
+                      padding: "10px 16px",
+                      fontSize: 13.5,
+                      fontWeight: 600,
+                      cursor:
+                        journalManuelNom.trim() && Number.isFinite(parseInt(journalManuelKcal, 10)) ? "pointer" : "default",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    <Plus size={14} /> Ajouter
+                  </button>
+                  <button
+                    onClick={() => setJournalManuel(false)}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: "#9CAB9C",
+                      fontSize: 12,
+                      textDecoration: "underline",
+                      cursor: "pointer",
+                      padding: 0,
+                    }}
+                  >
+                    Revenir à la recherche
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="carnet-title" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>
+            Entrées du jour
+          </div>
+          {journalEntreesJour.length === 0 ? (
+            <div style={{ fontSize: 13, color: "#9CAB9C", textAlign: "center", padding: "20px 10px" }}>
+              Aucune entrée pour ce jour.
+            </div>
+          ) : (
+            journalEntreesJour.map((e) => (
+              <div
+                key={e.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "11px 4px",
+                  borderBottom: "1px solid #2E3F33",
+                }}
+              >
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 14 }}>{e.nom}</div>
+                  <div style={{ fontSize: 11.5, color: "#7C8C7E" }}>
+                    {e.quantite} · {e.kcal} kcal
+                  </div>
+                </div>
+                <button
+                  onClick={() => supprimerEntreeJournal(e.id)}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "#5A6E5E",
+                    cursor: "pointer",
+                    padding: 8,
+                    flexShrink: 0,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ))
+          )}
         </div>
       )}
 

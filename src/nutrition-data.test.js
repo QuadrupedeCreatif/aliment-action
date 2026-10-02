@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { calculerCibleFoyer, construireLigneFoyer } from "./nutrition-data.js";
+import { calculerCibleFoyer, construireLigneFoyer, calculerCiblePersonne, FIBRES_PAR_1000KCAL, rechercherAliment, FOOD_TABLE } from "./nutrition-data.js";
 
 test("la ligne de contexte foyer liste chaque personne et somme les deux cibles (pas la valeur d'une seule)", () => {
   const personnes = [
@@ -14,8 +14,10 @@ test("la ligne de contexte foyer liste chaque personne et somme les deux cibles 
 
   const totalAttendu = cible.parPersonne.reduce((s, p) => s + p.kcal, 0);
   const protAttendu = cible.parPersonne.reduce((s, p) => s + p.prot, 0);
+  const fibresAttendu = cible.parPersonne.reduce((s, p) => s + p.fibres, 0);
   assert.equal(cible.kcal, totalAttendu, "le total kcal doit être la somme des deux profils, pas la valeur d'un seul");
   assert.equal(cible.prot, protAttendu, "le total protéines doit être la somme des deux profils");
+  assert.equal(cible.fibres, fibresAttendu, "le total fibres doit être la somme des deux profils");
   assert.ok(cible.kcal > cible.parPersonne[0].kcal, "le total foyer doit dépasser la cible d'une seule personne");
 
   const ligne = construireLigneFoyer(cible);
@@ -56,4 +58,33 @@ test("3 profils complets : les trois noms apparaissent et le total est la somme 
   }
   const totalAttendu = cible.parPersonne.reduce((s, p) => s + p.kcal, 0);
   assert.equal(cible.kcal, totalAttendu);
+});
+
+test("cible fibres = 14g pour 1000 kcal de la cible retenue (calculée ou manuelle)", () => {
+  const personneCalculee = { id: 1, nom: "A", taille: "178", poids: "75", age: "30", sexe: "H", activite: "modere", objectifCalorique: "" };
+  const cibleA = calculerCiblePersonne(personneCalculee, "equilibre");
+  assert.equal(cibleA.fibres, Math.round((cibleA.kcal / 1000) * FIBRES_PAR_1000KCAL));
+
+  const personneManuelle = { id: 2, nom: "B", taille: "178", poids: "75", age: "30", sexe: "H", activite: "modere", objectifCalorique: "2000" };
+  const cibleB = calculerCiblePersonne(personneManuelle, "equilibre");
+  assert.equal(cibleB.kcal, 2000, "l'objectif calorique manuel doit être respecté");
+  assert.equal(cibleB.fibres, Math.round((2000 / 1000) * 14), "les fibres doivent suivre le kcal manuel, pas le kcal calculé");
+});
+
+test("chaque aliment de la table a une valeur fibres définie (>= 0, pas undefined/NaN)", () => {
+  for (const f of FOOD_TABLE) {
+    assert.ok(Number.isFinite(f.fibres) && f.fibres >= 0, `${f.nom} doit avoir des fibres numériques >= 0, reçu : ${f.fibres}`);
+  }
+});
+
+test("rechercherAliment trouve un aliment connu indépendamment de la casse/accents, et rien pour une requête vide", () => {
+  const resultatsPoulet = rechercherAliment("POULET");
+  assert.ok(resultatsPoulet.length >= 2, "doit trouver au moins Poulet blanc et Poulet cuisse");
+  assert.ok(resultatsPoulet.every((f) => f.nom.toLowerCase().includes("poulet")));
+
+  const resultatsAccent = rechercherAliment("cafe"); // pas d'accent, ne doit pas planter
+  assert.ok(Array.isArray(resultatsAccent));
+
+  assert.deepEqual(rechercherAliment(""), []);
+  assert.deepEqual(rechercherAliment("   "), []);
 });
